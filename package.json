@@ -1,0 +1,11 @@
+{
+  "name": "prompt-optimizer",
+  "version": "1.0.0",
+  "description": "Automatic prompt rewriting skill and hooks/extensions for AI coding agents.",
+  "keywords": ["pi-package", "agent-skills", "prompt-optimizer"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./hooks/prompt-optimizer-pi.js"],
+    "skills": ["."]
+  }
+}

@@ -8,7 +8,7 @@
 - **有选择。** 情绪发泄、“同意”、“你自己决定”、单步微调、本来就清晰的话，都会静默跳过；只有实质性但表述含糊的任务才改写。
 - **简短。** 只输出一段话加一句确认，不是模板，也不是长篇说明。
 - **任何语言。** 改写结果和确认语都跟随你使用的语言。
-- **多助手通用。** Skill 本身可用于 Claude Code、Codex、Cursor、Grok、Antigravity；可选的 Hook 能让它在 Antigravity、Claude Code、Codex 里自动触发。
+- **多助手通用。** Skill 本身可用于 Claude Code、Codex、Pi、Cursor、Grok、Antigravity；可选的 Hook 或 Extension 能让它在 Antigravity、Claude Code、Codex 和 Pi 里自动触发。
 
 ## 效果
 
@@ -57,17 +57,18 @@ for d in ~/.claude/skills ~/.codex/skills ~/.cursor/skills ~/.grok/skills \
 done
 ```
 
-按你实际使用的助手调整目录列表。装好后可以在任一助手里手动调用，例如 `/prompt-optimizer 帮我做个PPT介绍新产品`，或者说“帮我优化这段提问：……”。
+按你实际使用的助手调整目录列表；Pi 也会自动扫描 `~/.agents/skills/prompt-optimizer/SKILL.md`，或使用下文 `pi install` 一次装好 Skill 与自动扩展。装好后可以在任一助手里手动调用，例如 `/prompt-optimizer 帮我做个PPT介绍新产品`（Pi 里原生 Skill 语法是 `/skill:prompt-optimizer ...`），或者说“帮我优化这段提问：……”。
 
-### 2. 自动分流（可选 Hook）
+### 2. 自动分流（可选 Hook / Extension）
 
-Hook 在每条消息之前运行，提示助手应用这个 Skill。需要 Node.js 18+。
+Hook 或 Extension 在每条消息之前运行，提示助手应用这个 Skill。需要 Node.js 18+。
 
-| 助手 | 自动 Hook | 说明 |
+| 助手 | 自动触发 | 说明 |
 | --- | --- | --- |
 | Antigravity | 支持 | `hooks/prompt-optimizer-agy.js` |
 | Claude Code | 支持 | `hooks/prompt-optimizer-hook.js claude` |
 | Codex | 支持 | `hooks/prompt-optimizer-hook.js codex`；需要你信任新 Hook |
+| Pi | 支持 | `pi install git:github.com/TinkCarlos/prompt-optimizer` 或 `hooks/prompt-optimizer-pi.js` |
 | Cursor | 不支持 | 它的提交前 Hook 不能给模型追加上下文，请手动调用 Skill |
 | Grok | 未测试 | 请手动调用 Skill |
 
@@ -106,7 +107,24 @@ cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
 
 把 `hooks/codex-hooks.example.json` 合并进 `~/.codex/hooks.json`，并确认已开启 Hook（`~/.codex/config.toml` 的 `[features]` 下有 `hooks = true`）。**Codex 在你信任之前不会运行新 Hook**：在 Codex 里打开 `/hooks`，批准 `prompt-optimizer-hook.js`，然后新开一个会话。
 
-怎样确认已生效：发一句含糊的任务，比如 `帮我做个PPT介绍新产品`。Hook 第一次运行时会创建 `~/.agents/hooks-state/prompt-optimizer/`（Antigravity 是 `~/.gemini/config/hooks/state/prompt-optimizer/`）。注意：像“审查某某功能有没有问题”这种本来就清晰的请求，Hook 虽然在运行，模型也会静默跳过，所以不要用它来验证。
+**Pi**
+
+作为 Pi 包一键安装（同时安装 Skill 与自动扩展）：
+
+```bash
+pi install git:github.com/TinkCarlos/prompt-optimizer
+```
+
+如果你已经把 `SKILL.md` 复制到了 `~/.agents/skills/prompt-optimizer/` 或 `~/.pi/agent/skills/prompt-optimizer/`，只需复制单个扩展文件，避免重名 Skill 警告：
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+cp hooks/prompt-optimizer-pi.js ~/.pi/agent/extensions/prompt-optimizer.js
+```
+
+在运行中的 Pi 会话输入 `/reload`，或新开会话即可生效。
+
+怎样确认已生效：发一句含糊的任务，比如 `帮我做个PPT介绍新产品`。Hook 第一次运行时会创建 `~/.agents/hooks-state/prompt-optimizer/`（Antigravity 是 `~/.gemini/config/hooks/state/prompt-optimizer/`；Pi 的会话开关记在当前会话树中，`default-mode.txt` 记在 `~/.agents/hooks-state/prompt-optimizer/`）。注意：像“审查某某功能有没有问题”这种本来就清晰的请求，Hook/扩展虽然在运行，模型也会静默跳过，所以不要用它来验证。
 
 ## 控制命令
 
@@ -132,6 +150,7 @@ Skill 和改写支持任何语言。Hook 会在不调用模型的情况下跳过
 ```bash
 node tests/test-hook.js              # Antigravity Hook
 node tests/test-cross-host-hook.js   # Claude Code 和 Codex Hook
+node tests/test-pi-extension.js      # Pi Extension
 ```
 
 ## 局限

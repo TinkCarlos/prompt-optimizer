@@ -8,7 +8,7 @@ A skill that rewrites a vague request into one short, high-signal prompt before 
 - **Selective.** Venting, "yes", "you decide", single-step tweaks and already-clear messages are skipped silently. Only substantive but vague tasks are rewritten.
 - **Short.** The output is one paragraph plus one confirmation line, not a template or a lecture.
 - **Any language.** The rewrite and the confirmation line follow the language you wrote in.
-- **Works across agents.** The skill itself runs in Claude Code, Codex, Cursor, Grok and Antigravity. Optional hooks make it trigger automatically in Antigravity, Claude Code and Codex.
+- **Works across agents.** The skill itself runs in Claude Code, Codex, Pi, Cursor, Grok and Antigravity. Optional hooks or extensions make it trigger automatically in Antigravity, Claude Code, Codex and Pi.
 
 ## What it does
 
@@ -58,17 +58,18 @@ for d in ~/.claude/skills ~/.codex/skills ~/.cursor/skills ~/.grok/skills \
 done
 ```
 
-Adjust the list to the agents you use. After this you can call it manually in any of them, for example `/prompt-optimizer make a deck introducing the new product` or "optimize this prompt: ...".
+Adjust the list to the agents you use. Pi also discovers `~/.agents/skills/prompt-optimizer/SKILL.md`, or you can install it together with the automatic extension via `pi install` below. After this you can call it manually in any agent, for example `/prompt-optimizer make a deck introducing the new product` (`/skill:prompt-optimizer ...` in Pi) or "optimize this prompt: ...".
 
-### 2. Automatic routing (optional hooks)
+### 2. Automatic routing (optional hooks & extensions)
 
-A hook runs before every message and tells the agent to apply the skill. Hooks need Node.js 18+.
+A hook or extension runs before every message and tells the agent to apply the skill. Hooks and the Pi extension need Node.js 18+.
 
-| Agent | Automatic hook | Notes |
+| Agent | Automatic trigger | Notes |
 | --- | --- | --- |
 | Antigravity | yes | `hooks/prompt-optimizer-agy.js` |
 | Claude Code | yes | `hooks/prompt-optimizer-hook.js claude` |
 | Codex | yes | `hooks/prompt-optimizer-hook.js codex`; you must trust the new hook |
+| Pi | yes | `pi install git:github.com/TinkCarlos/prompt-optimizer` or `hooks/prompt-optimizer-pi.js` |
 | Cursor | no | its prompt hook cannot add context to the model; use the skill manually |
 | Grok | not tested | use the skill manually |
 
@@ -107,7 +108,24 @@ cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
 
 Merge `hooks/codex-hooks.example.json` into `~/.codex/hooks.json` and make sure hooks are enabled (`hooks = true` under `[features]` in `~/.codex/config.toml`). **Codex does not run a new hook until you trust it**: open `/hooks` in Codex and approve `prompt-optimizer-hook.js`. After that, start a new session.
 
-To check that it is active, send a vague task such as `make a deck introducing the new product`. The hook creates `~/.agents/hooks-state/prompt-optimizer/` the first time it runs (Antigravity: `~/.gemini/config/hooks/state/prompt-optimizer/`).
+**Pi**
+
+Install as a Pi package (installs both the skill and the automatic extension):
+
+```bash
+pi install git:github.com/TinkCarlos/prompt-optimizer
+```
+
+Or, if you already copied `SKILL.md` to `~/.agents/skills/prompt-optimizer/` or `~/.pi/agent/skills/prompt-optimizer/`, copy only the extension file so Pi does not warn about duplicate skills:
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+cp hooks/prompt-optimizer-pi.js ~/.pi/agent/extensions/prompt-optimizer.js
+```
+
+Run `/reload` in an active Pi session or start a new session.
+
+To check that it is active, send a vague task such as `make a deck introducing the new product`. The hook creates `~/.agents/hooks-state/prompt-optimizer/` the first time it runs (Antigravity: `~/.gemini/config/hooks/state/prompt-optimizer/`). In Pi, session mode is stored in the active session branch and `default-mode.txt` is stored under `~/.agents/hooks-state/prompt-optimizer/`.
 
 ## Controls
 
@@ -133,6 +151,7 @@ The skill and the rewrite work in any language. The hook skips obvious replies w
 ```bash
 node tests/test-hook.js              # Antigravity hook
 node tests/test-cross-host-hook.js   # Claude Code and Codex hook
+node tests/test-pi-extension.js      # Pi extension
 ```
 
 ## Limitations
