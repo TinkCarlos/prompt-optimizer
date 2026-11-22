@@ -1,63 +1,69 @@
 ---
 name: prompt-optimizer
 description: >-
-  在用户输入后立即结合上下文快速判断「改写」或「不改写」：情绪发泄、上下文确认、单步微调或已足够清晰的输入直接放行不用本技能；仅值得改写时才于 100% 严格保留原意与约束的前提下，运用 Felix Rieseberg 深度/广度方法与现代推理模型最佳实践改写为简洁高效的提问，经确认后再执行。适用于自动前置路由，或显式触发“优化提问”、“润色 prompt”、“/prompt-optimizer”。
+  Works in any language. Before acting on a user message, decide from the conversation context whether it is worth rewriting (REWRITE or SKIP). Venting, confirmations, single-step tweaks and already-clear messages are skipped silently. When a rewrite is worth it, restate the request as one short, high-signal prompt in the user's own language, preserving intent, scope and constraints 100%, and ask the user to confirm before executing. Use for automatic pre-routing, or when the user asks to "optimize my prompt", "polish this prompt" or runs /prompt-optimizer.
 ---
 
-# 提问优化器（Prompt Optimizer）
+# Prompt Optimizer
 
-先判断值不值得改写；值得改写时，才把用户原话提炼成高密度、可直接执行的一段提问并等确认。
+First decide whether a rewrite is worth it. If it is, turn the user's words into one dense, ready-to-run prompt and wait for confirmation. Always write in the language the user wrote in.
 
-## 1. 第一步：结合上下文极速判断（`改写` / `不改写`）
+## 1. Step one: decide REWRITE or SKIP from context
 
-- **分流执行规则**：
-  - 若作为独立分流器被调用（要求只给判定结果）：**只回复 `改写` 或 `不改写`**，不附任何解释。
-  - 若在正常对话中前置触发：判 **`不改写`** 时**完全静默放行**，不要调用改写、也不要向用户输出“不改写/无需改写/已跳过”等字样，直接照常回复或执行；判 **`改写`** 才进入第 2 节。
-  - 若用户显式点名本技能（如 `/prompt-optimizer <内容>`、“帮我优化这段提问”）：跳过判断，直接进入第 2 节。
-- **结合上下文一律判 `不改写` 的 6 类输入**：
-  1. **情绪发泄 / 抱怨 / 吐槽 / 寒暄闲聊**（如“烦死了又崩了”“气死我了”“早啊”，无实质待办或只需共情回应）；
-  2. **上下文承接 / 确认 / 否定 / 选方案 / 授权 / 催进度**（结合前文即可明白的“同意”“就按方案 2”“你自己决定”“按你推荐的做”“修复”“部署上线”“算了先不管”“你帮我全做完”“继续”；粘贴上一轮 AI 回复只为接着聊的也算）；
-  3. **明确的单步微调或简单事实追问**（如“把按钮改蓝色”“删第 3 行”“这个文件在哪”“解释下这个报错码”，目标唯一，改写反而添乱）；
-  4. **对当前对话、回复质量或本工具本身的评价/反馈**（如“太复杂了”“看下这个效果打几分”“是不是冲突了”）；
-  5. **原话已结构清晰、目标与约束完整**（改写收益低于多等一次确认的成本）；
-  6. **已明确调用其他专项技能或固定工作流**（如“用 bug-fixing 查”“做个 code review”）。
-- **同时满足以下 2 条才判 `改写`**：
-  1. 属于需要 AI 动手分析、排查、创作、设计、规划或编码的**实质任务**；
-  2. 原话偏口语、宽泛、缺关键方法/验证抓手，或直接贴了无说明的报错/截图/素材，改写能**实质提升 AI 的执行做法与结果质量**（而不是换措辞凑字数）。
+- **How to answer**
+  - Called as a standalone router (asked for the verdict only): reply with exactly `REWRITE` or `SKIP`, nothing else.
+  - Running inline before a normal reply: on **SKIP**, stay completely silent about it. Do not mention routing or rewriting, do not load the rest of this skill, just answer or act. On **REWRITE**, continue to section 2.
+  - The user names this skill explicitly (`/prompt-optimizer <text>`, "optimize this prompt"): skip the decision and go to section 2.
+- **Always SKIP (judge with the conversation context)**
+  1. Venting, complaints, chit-chat, greetings.
+  2. Confirmations, rejections, option picks, delegation or nudges that only make sense against the previous turn ("yes", "option 2", "you decide", "do what you recommended", "continue", "fix it", "deploy").
+  3. A clear single-step tweak or a simple factual question ("make the button blue", "which file is this in?").
+  4. Feedback about your previous reply or about this tool ("too long", "is this conflicting with something?").
+  5. A message that is already structured, with a clear goal and constraints.
+  6. A message that already names a specific skill or workflow.
+- **REWRITE only when both hold**
+  1. It is a substantive task that needs analysis, debugging, creation, design, planning or coding.
+  2. The wording is vague or colloquial, lacks a method or a way to verify the result, or pastes an error, screenshot or material with no instruction, so a rewrite will clearly improve what the AI does.
 
-## 2. 第二步：10 分改写规范（保真、去噪、按题型发力）
+## 2. Step two: rewrite rules
 
-- **三条铁律**：
-  - **100% 严格保真**：绝不篡改、增删或扩大用户的意思、范围、数值与约束；缺关键信息不脑补，只在真阻塞时顺带说明即可，不列 `[待补充]` 清单。
-  - **提炼真信号，去噪不复读**：面对粘贴的报错、日志、截图或长文本，只保留真正指向根因或目标的核心线索，**剔除无关字段**（例如与地区限制无关的通用 HTTP 响应头），绝不要求 AI 分析无关字段；同一对话里上一条刚贴过长 ID / 大段原文时直接简短指代，不原样复读（用户说明要复制去外部 AI 时除外）。
-  - **像高手发的一句话，不要像写公文**：默认写成**自然流畅的 1 段话（1–4 句，通常 50–150 字）**；**严禁**套用「背景与目标 / 已知材料 / 边界与护栏」等分节模板和无故长列表；删去“你是一个资深专家”“请一步步思考”等过时套话。
-- **按 5 类任务选对改写抓手**：
-  - **排错 / 排查类**：提炼核心报错与现象，要求结合一手日志、配置、代码或实际环境取证定位根因并给可验证方案，证据不足直说不猜。
-  - **开发 / 改代码类**：锁定目标行为与受影响入口，要求先读现行代码、最小改动实现并用定向测试或实际运行结果验收。
-  - **调研 / 分析 / 决策类**：聚焦核心判断与取舍标准，要求用一手资料、真实数据或正反例对比，写清依据与适用前提。
-  - **创作 / 文档 / PPT / 文案类**：保留原交付物不变，补清受众、要让对方看懂什么因果或促成什么决定（名词补动词），基于原始素材提炼、去空泛套话；创意/起名类不生硬加“不要猜测”。
-  - **宽泛大目标类**：不替用户瞎定需求，收束为先结合现状拆清核心瓶颈与可选路径、给出可落地第一步。
+- **100% fidelity.** Never change, add or widen the user's meaning, scope, numbers or constraints. If a critical fact is missing, do not invent it; mention the gap in a short clause only if it truly blocks the work.
+- **Keep the real signal, drop the noise.** For pasted errors, logs or long text keep only the lines that point at the cause or the goal. Drop unrelated fields (for example generic HTTP headers) and long IDs already shown earlier in the same conversation, unless the user will copy the prompt to another tool.
+- **One sentence a pro would write, not a memo.** Default to one natural paragraph of 1 to 4 sentences. No section templates ("Background / Inputs / Constraints"), no long lists unless the original message itself contains several independent requests. Remove stale boilerplate: "act as an expert", "think step by step".
+- **Ask for how experts work, with outside checks.** Point to first-hand material (logs, code, raw data, primary docs), the methods and tools practitioners really use, and an external way to verify the result. Never ask the AI to grade its own work. When facts matter, say that unknowns must be reported, not guessed.
+- **Match the task type.**
+  - Debugging: core error and symptom, evidence from real logs, config and code, a verifiable fix.
+  - Coding: target behavior and affected entry points, read current code first, smallest change, verify with a targeted test or run.
+  - Research or decision: the core judgment and the criteria, primary sources or real data, state the assumptions.
+  - Writing, slides, copy: keep the deliverable; add the audience and what they must understand or decide (turn the noun into a verb), work from source material, cut filler. Do not add "do not guess" to creative work.
+  - Broad goals: do not invent requirements; ask for the current state, the main bottleneck, the options and a concrete first step.
 
-## 3. 极简输出格式（只给优化正文 + 一句确认）
+## 3. Output format (rewritten prompt plus one confirmation line, nothing else)
+
+Write the heading, the confirmation line and the prompt in the user's language.
 
 ```markdown
-### 优化后的提问
+### Optimized Prompt
 
-> <1 段精炼自然话正文，不加小标题>
+> <one short natural paragraph, no sub-headings>
 
-按这句提问吗？（同意 / 修改 / 按原话）
+Use this prompt? (approve / edit / use original)
 ```
 
-- **严禁输出**：关键优化点、优化说明、可选拔高思路、改写对比或“判断：改写”等过程字样；英文提问主标题用 `### Optimized Prompt`。若用户明确要求“只优化不执行”，只输出优化文本。
+- Never output change notes, explanations, optional "stretch" ideas, before/after comparisons or any mention of the routing decision.
+- Keep the structure exactly: a `###` heading, one blockquote, one confirmation line. Hooks recognize the confirmation turn by this shape in any language.
+- If the user asks to optimize without executing, output only the optimized text.
 
-### 对照示范
+### Examples
 
-1. **创作类（名词补动词）**：原话 `帮我做个PPT介绍新产品`
-   > 帮我整理一份新产品介绍 PPT 的结构与每页文案，重点让忙于决策的客户/同事快速看懂它解决什么问题、凭什么有效以及下一步怎么试用；请基于产品原始资料提炼（缺的参数或数据直接留空标注，不要编造），避免空泛口号。
-2. **贴报错类（去噪、不复读长 ID 与无关头）**：原话 `<粘贴一段包含通用响应头、TraceID 与 "User location is not supported for the API use." 的 400 报错>`
-   > 针对刚才报错里的 `HTTP 400 / FAILED_PRECONDITION（User location is not supported for the API use.）`，请检查本机实际网络、代理配置及出口地区等可验证信息，定位触发地区限制的具体原因并给出解决步骤；若缺少必要网络信息导致无法确定，直接说明缺口，不要猜测。
+1. Creative task. Original: `make a deck introducing the new product`
+   > Draft the structure and slide-by-slide copy for a new-product deck that lets busy decision makers grasp in a few minutes what problem it solves, why it works and how to try it next; build it from the real product materials, mark missing numbers as blanks instead of inventing them, and avoid empty slogans.
+2. Pasted error, noise removed. Original: `<a pasted 400 error with generic response headers, a trace ID and "User location is not supported for the API use.">`
+   > For the `HTTP 400 FAILED_PRECONDITION` ("User location is not supported for the API use.") in the error above, check the machine's real network path, proxy settings and egress region to find what triggers the location restriction and give verified steps to fix it; if the network facts are missing, say what is unknown instead of guessing.
+3. Language is preserved. Original: `hazme una presentación del producto nuevo`
+   > Prepara la estructura y el texto de cada diapositiva de una presentación del producto nuevo, pensada para que quienes deciden entiendan en pocos minutos qué problema resuelve y cuál es el siguiente paso; usa los materiales reales del producto y deja en blanco los datos que falten en lugar de inventarlos.
 
-## 4. 确认后流转与快捷命令
+## 4. After the user replies
 
-- **同意**（含补充细节）：立即按最终版执行，不重复优化；**要求修改**：按意见修订后再等确认（说“改完直接执行”则直接执行）；**按原话**：严格按上一轮原始输入执行。
-- Antigravity 命令：`/prompt-optimizer on | off | status | default on | default off`，关闭时可用 `/prompt-optimizer <内容>` 单次触发；消息开头加 `原文：`、`raw:`、`直接：` 或 `跳过优化` 可单次绕过。
+- **Approve** (optionally with extra details): execute the final prompt immediately, do not optimize again. **Edit**: revise and show it again (if they say "edit and just run it", run it). **Use original**: execute the original wording exactly.
+- Commands (when a hook is installed): `/prompt-optimizer on | off | status | default on | default off`; `/prompt-optimizer <text>` forces one rewrite even when auto mode is off; start a message with `raw:` to bypass once.

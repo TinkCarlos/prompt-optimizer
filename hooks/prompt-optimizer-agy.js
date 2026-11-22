@@ -11,14 +11,23 @@ const STATE_ROOT = process.env.AGY_HOOK_STATE_DIR || path.join(os.homedir(), '.g
 const STATE_DIR = path.join(STATE_ROOT, 'prompt-optimizer');
 const SKILL_PATH = process.env.PROMPT_OPTIMIZER_SKILL_PATH || path.join(os.homedir(), '.gemini', 'config', 'skills', 'prompt-optimizer', 'SKILL.md');
 
-const BYPASS_PREFIX_RE = /^(?:raw|原文|直接|不优化|跳过优化)(?:\s*[:：]|\s|$)/i;
-const PURE_ACK_RE = /^(?:同意|确认|好的?|好了|可以|可以了|行|行了|嗯|是的?|对|收到|明白|知道了|了解|懂了|没事了|不用改了|弄好了|搞定了|完成了|做完了|登好了|登录好了|绑好了|谢谢|感谢|继续|没问题|按这个来?|就这样|发吧|执行|按原话|跳过优化|跳过|不用了|取消|算了|停止|ok|okay|yes|no|y|n|go|continue|proceed|lgtm|looks\s+good|选\s*\d+|第\s*\d+\s*[个项条]?|[a-d1-4])$/i;
+const BYPASS_PREFIX_RE = /^(?:raw\s*[:：]|(?:原文|直接|不优化|跳过优化)(?:\s*[:：]|\s|$))/i;
+const PURE_ACK_RE = /^(?:同意|确认|好的?|好了|可以|可以了|行|行了|嗯|是的?|对|收到|明白|知道了|了解|懂了|没事了|不用改了|弄好了|搞定了|完成了|做完了|登好了|登录好了|绑好了|谢谢|感谢|继续|没问题|按这个来?|就这样|发吧|执行|按原话|跳过优化|跳过|不用了|取消|算了|停止|ok|okay|yes|no|y|n|go|continue|proceed|lgtm|looks\s+good|选\s*\d+|第\s*\d+\s*[个项条]?|sí|si|vale|gracias|oui|merci|ja|danke|はい|了解です?|ありがとう|네|좋아요|감사합니다|да|спасибо|[a-d1-4])$/i;
 const ACK_LEAD_RE = /^(?:同意|确认|好的|好了|弄好了|搞定了|继续|可以|没问题|按这个来?|就这样|发吧|执行|按原话|跳过优化)(?:[，,。.！!\s]|$)/i;
 const SHORT_FOLLOWUP_RE = /^(?:(?:下面|接下来|下一步|然后|后面)(?:该|要)?(?:做什么|怎么做|干什么|呢)|下一步(?:呢)?|继续吧|然后呢)[？?！!。.]*$/i;
 // Delegation and bare context verbs ("你自己决定", "按你推荐的做", "修复") only make sense against the previous turn.
-const CONTEXT_ONLY_RE = /^(?:你(?:自己|来)?(?:决定|定吧?|看着办|安排吧?)|听你的|按照?你(?:的)?(?:推荐|建议|说|方案|计划)的?(?:做|来|办|改)?(?:吧)?|(?:那就)?(?:修复|修吧|改吧|部署|部署上线|上线|发布|提交|推送|开始|开始吧|开干|做吧|干吧|去做吧)(?:吧)?)$/i;
+const CONTEXT_ONLY_RE = /^(?:you decide|up to you|your call|do what you (?:recommend|suggest)|go ahead|do it|(?:fix|deploy|ship|publish|commit|push)(?: it)?|你(?:自己|来)?(?:决定|定吧?|看着办|安排吧?)|听你的|按照?你(?:的)?(?:推荐|建议|说|方案|计划)的?(?:做|来|办|改)?(?:吧)?|(?:那就)?(?:修复|修吧|改吧|部署|部署上线|上线|发布|提交|推送|开始|开始吧|开干|做吧|干吧|去做吧)(?:吧)?)$/i;
 const SINGLE_LINE_CMD_RE = /^(?:git|npm|pnpm|yarn|bun|pytest|vitest|jest|ls|pwd|cd|cat|rg|grep)\b/i;
 const OPTIMIZER_HEADING_RE = /(?:^|\n)#{2,4}\s*(?:优化后的提问|Optimized Prompt)/i;
+
+// Language-neutral: a short reply that is a heading plus a blockquote is the optimized prompt, whatever the language.
+function looksLikeOptimizedPrompt(text) {
+  const t = String(text || '').replace(/```[\s\S]*?```/g, '').trim();
+  if (!t) return false;
+  if (OPTIMIZER_HEADING_RE.test(t)) return true;
+  const lines = t.split(/\r?\n/).filter((l) => l.trim());
+  return t.length <= 1500 && lines.length <= 8 && /^#{2,4}\s+\S/.test(lines[0]) && lines.some((l) => /^>\s*\S/.test(l));
+}
 
 function out(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -93,7 +102,7 @@ function inspectTranscript(payload) {
             const content = String(d.content || '').trim();
             if (!content) continue;
             decided = true;
-            replyIsPrompt = OPTIMIZER_HEADING_RE.test(content.replace(/```[\s\S]*?```/g, ''));
+            replyIsPrompt = looksLikeOptimizedPrompt(content);
             break;
           }
         }
@@ -197,27 +206,27 @@ function gateInstruction(isExplicit) {
   if (isExplicit) {
     return [
       '[PROMPT-OPTIMIZER EXPLICIT]',
-      `本次为用户显式调用 \`/prompt-optimizer\`，跳过「改写/不改写」分流，直接读取并严格遵循 ${SKILL_PATH} 第 2、3 节：`,
-      '- 100% 严格保留原意、范围与约束，剔除无关字段与冗余 ID；默认写成 1 段简短自然话（禁止套分节模板和长列表）。',
-      '- 本轮只输出 `### 优化后的提问` + 优化正文 + `按这句提问吗？（同意 / 修改 / 按原话）`，禁止输出关键优化点、可选拔高思路或任何额外解释；不要执行原任务、不要修改文件、不要退出 plan mode。',
+      `The user explicitly invoked /prompt-optimizer. Skip the REWRITE/SKIP routing and follow ${SKILL_PATH} (sections 2 and 3) directly.`,
+      '- Preserve 100% of the original intent, scope and constraints; drop irrelevant fields and redundant IDs; write one short natural paragraph (no section templates, no long lists).',
+      "- Reply in the same language as the user's message. Output only the optimized-prompt heading, the prompt in a blockquote, and one confirmation line (approve / edit / use original), localized to the user's language. No change notes, no extra suggestions. Do not execute the original task or modify files.",
     ].join('\n');
   }
   return [
     '[PROMPT-OPTIMIZER ROUTER]',
-    '请先结合当前对话上下文，在内部极速二选一判断本轮用户消息是否值得改写（「改写」或「不改写」）：',
-    '- 判「不改写」：情绪发泄/抱怨/闲聊、上下文确认/否决/选方案/催进度、明确单步微调或简单事实追问、对本回复/工具的评价反馈、原话已足够清晰或已指定其他专项技能。→ 不要读取 SKILL.md，不要向用户输出“改写/不改写/无需改写”等任何提示，完全静默跳过本门控并直接正常回复或执行。',
-    `- 判「改写」：仅当属于实质新任务，且原话明显偏口语/宽泛/缺方法或验证抓手（或直接贴了无说明的报错/素材），改写能明显提升执行效果时。→ 立即读取并严格遵循 ${SKILL_PATH}，只输出 \`### 优化后的提问\` + 1 段极简自然话正文 + \`按这句提问吗？（同意 / 修改 / 按原话）\`（禁止输出关键优化点、可选拔高思路或分节模板），本轮不执行原任务、不改文件、不退出 plan mode。`,
+    "Silently decide, using the conversation context, whether the user's latest message is worth rewriting: REWRITE or SKIP.",
+    '- SKIP when: venting, complaints or chit-chat; a confirmation, rejection, option pick, delegation ("you decide") or nudge that only makes sense against the previous turn; a clear single-step tweak or simple factual question; feedback about your previous reply or about this tool; a message that is already clear and complete; or one that already names a specific skill or workflow. On SKIP: do not read SKILL.md, do not mention routing or rewriting in any way, and just answer or act normally.',
+    `- REWRITE only when the message is a substantive new task AND its wording is vague, colloquial or lacks a method or verification handle (or it pastes an error or material with no instruction), so that a rewrite clearly improves the result. On REWRITE: read ${SKILL_PATH} and follow it; reply in the user's language with only the optimized-prompt heading, one short blockquote paragraph and one confirmation line (approve / edit / use original). No change notes or extra suggestions. Do not execute the original task or modify files this turn.`,
   ].join('\n');
 }
 
 function pendingReplyInstruction() {
   return [
     '[PROMPT-OPTIMIZER PENDING-REPLY]',
-    '用户正在回复上一轮待确认的优化提问，请按下列分支处理：',
-    '1. 若用户同意执行（含同意并补充细节）：立刻按最终定稿执行原任务，不要再次停下来优化。',
-    '2. 若用户要求「按原话 / 跳过优化」：严格按上一轮用户原始输入执行原任务。',
-    '3. 若用户提出修改建议并希望先确认：按 SKILL.md 输出修订后的优化提问并继续等待确认（若用户明确说“改完直接执行”，则直接执行）。',
-    `4. 若用户明显开启了一个全新的无关任务：按 [PROMPT-OPTIMIZER ROUTER] 先结合上下文快速判断「改写/不改写」，值得改写再读取 ${SKILL_PATH} 优化并等待确认，否则静默直接处理。`,
+    'The user is replying to the optimized prompt you showed in the previous turn. Handle it as follows:',
+    '1. If they approve (optionally adding details): execute the original task with the final optimized prompt right away; do not optimize again.',
+    '2. If they ask for the original wording ("use original", "raw", "skip"): execute the task exactly as originally written.',
+    '3. If they request edits and want to review again: output the revised optimized prompt in the same format and wait (if they say "edit and just run it", run it directly).',
+    `4. If they clearly start an unrelated new task: apply [PROMPT-OPTIMIZER ROUTER] to it silently; read ${SKILL_PATH} only if it is worth rewriting, otherwise just handle it.`,
   ].join('\n');
 }
 
@@ -236,27 +245,27 @@ function handleCommand(convId, session, argText) {
 
   if (lower === 'off') {
     writeSession(convId, { mode: 'off', awaitingConfirm: false });
-    return out(injectOutput('[PROMPT-OPTIMIZER CONFIG] 当前会话的提问自动优化已关闭。请简短告知用户当前状态（可用 `/prompt-optimizer on` 重新开启），不要执行其他任务。'));
+    return out(injectOutput('[PROMPT-OPTIMIZER CONFIG] Automatic prompt optimization is now OFF for this session. Tell the user briefly (they can re-enable it with `/prompt-optimizer on`) and do nothing else.'));
   }
   if (lower === 'on') {
     writeSession(convId, { mode: 'on', awaitingConfirm: false });
-    return out(injectOutput('[PROMPT-OPTIMIZER CONFIG] 当前会话的提问自动优化已开启。请简短告知用户，不要执行其他任务。'));
+    return out(injectOutput('[PROMPT-OPTIMIZER CONFIG] Automatic prompt optimization is now ON for this session. Tell the user briefly and do nothing else.'));
   }
   if (lower === 'default off' || lower === 'default on') {
     const nextDefault = lower.endsWith('on') ? 'on' : 'off';
     writeDefaultMode(nextDefault);
-    return out(injectOutput(`[PROMPT-OPTIMIZER CONFIG] 已将新会话的默认提问优化模式设为 \`${nextDefault}\`。请简短告知用户，不要执行其他任务。`));
+    return out(injectOutput(`[PROMPT-OPTIMIZER CONFIG] New sessions will now default to \`${nextDefault}\`. Tell the user briefly and do nothing else.`));
   }
   if (lower === 'status' || trimmed === '') {
     const defMode = readDefaultMode();
-    const curMode = session.mode || `${defMode}（继承默认）`;
+    const curMode = session.mode || `${defMode} (inherited default)`;
     return out(injectOutput(
-      `[PROMPT-OPTIMIZER CONFIG] 当前会话状态：${curMode}；新会话默认：${defMode}。` +
-      '可用命令：`/prompt-optimizer on|off|status|default on|default off`，或 `/prompt-optimizer <待优化提问>`，单次跳过可在消息开头加 `原文：`。请简短回复用户说明即可。'
+      `[PROMPT-OPTIMIZER CONFIG] This session: ${curMode}; default for new sessions: ${defMode}. ` +
+      'Commands: `/prompt-optimizer on|off|status|default on|default off`, or `/prompt-optimizer <prompt to optimize>`; prefix a message with `raw:` to bypass once. Reply to the user with a brief summary.'
     ));
   }
 
-  // Explicit invocation with payload works even when auto mode is off.
+  // Explicit invocation with a payload works even when auto mode is off.
   writeSession(convId, { ...session, awaitingConfirm: true });
   return out(injectOutput(gateInstruction(true)));
 }

@@ -1,38 +1,142 @@
 # prompt-optimizer
 
-[中文说明](./README.zh-CN.md)
+[Chinese (Simplified)](./README.zh-CN.md)
 
-A minimal, high-fidelity AI prompt optimizer skill (inspired by Felix Rieseberg's *How to be more ambitious* — Depth, Range, Outside Judge, and modern reasoning model best practices) with an optional Antigravity `PreInvocation` router hook.
+A skill that rewrites a vague request into one short, high-signal prompt before your AI agent acts on it, in **your own language**, and that knows when **not** to rewrite.
 
-## How It Works
+- **Faithful.** It never changes your intent, scope, numbers or constraints. Missing facts are flagged, not invented.
+- **Selective.** Venting, "yes", "you decide", single-step tweaks and already-clear messages are skipped silently. Only substantive but vague tasks are rewritten.
+- **Short.** The output is one paragraph plus one confirmation line, not a template or a lecture.
+- **Any language.** The rewrite and the confirmation line follow the language you wrote in.
+- **Works across agents.** The skill itself runs in Claude Code, Codex, Cursor, Grok and Antigravity. Optional hooks make it trigger automatically in Antigravity, Claude Code and Codex.
 
-1. **Fast Context-Aware Routing (`改写` / `不改写`)**:
-   - Skips venting/complaints, contextual confirmations/delegations (`同意`, `你自己决定`, `继续`), single-step edits, feedback, and already-clear prompts silently without invoking the skill.
-   - Only rewrites substantive tasks where restructuring materially improves execution.
-2. **High-Fidelity, Concise Rewrite**:
-   - Preserves 100% of the user's original intent, scope, and constraints.
-   - Strips noise (irrelevant headers, redundant IDs in the same conversation) and outdated boilerplate ("act as an expert", "think step by step").
-   - Outputs one concise paragraph plus a single confirmation line before execution.
+## What it does
+
+You type a rough request. The agent first decides, silently, whether a rewrite would help. If so it shows one sharper prompt and waits:
+
+```text
+You:    make a deck introducing the new product
+
+Agent:  ### Optimized Prompt
+        > Draft the structure and slide-by-slide copy for a new-product deck that lets busy
+        > decision makers grasp in a few minutes what problem it solves, why it works and how
+        > to try it next; build it from the real product materials, mark missing numbers as
+        > blanks instead of inventing them, and avoid empty slogans.
+        Use this prompt? (approve / edit / use original)
+
+You:    approve          -> the agent runs the optimized prompt
+```
+
+The rewrite applies a few ideas drawn from public advice on prompting current models (for example from Felix Rieseberg of Anthropic): ask for the goal behind the task, point at first-hand material and the methods practitioners actually use instead of "act as an expert", name an external way to verify the result, and describe the deliverable by what it must achieve for its audience.
+
+### What gets skipped
+
+| You type | Result |
+| --- | --- |
+| `yes`, `option 2`, `continue`, `you decide`, `fix it` | skipped, the agent just proceeds |
+| `ugh, it broke again` | skipped, normal reply |
+| `make the button blue` | skipped, already a clear single step |
+| `too long, shorten it` (feedback on the last reply) | skipped |
+| a vague multi-step task, or a pasted error with no instruction | rewritten, then confirmed |
+
+### How well does it work
+
+Honest status: there is **no benchmark** yet. What exists is the behavior above, covered by an automated test suite for the hooks (routing, confirmation tracking, switches, long sessions), plus manual checks of real outputs in daily use. Whether the final answer is better depends on your task and model; the rewrite is deliberately small so it is cheap to read and easy to reject with `use original`. Routing is decided by the model, so it can occasionally rewrite something you consider clear; reply `use original` or start the message with `raw:`.
+
+Cost: with a hook installed, every non-trivial message carries a short routing instruction (a few hundred tokens). Messages such as `yes` or `continue` are filtered by the hook locally and add nothing.
 
 ## Install
 
-### As a Skill (Claude Code, Codex, Cursor, Grok, Antigravity)
+### 1. The skill (all agents)
 
-Copy `SKILL.md` into your agent's skill directory, e.g.:
+```bash
+git clone https://github.com/TinkCarlos/prompt-optimizer.git
+cd prompt-optimizer
+for d in ~/.claude/skills ~/.codex/skills ~/.cursor/skills ~/.grok/skills \
+         ~/.gemini/config/skills ~/.agents/skills; do
+  [ -d "$d" ] && mkdir -p "$d/prompt-optimizer" && cp SKILL.md "$d/prompt-optimizer/"
+done
+```
 
-- `~/.gemini/config/skills/prompt-optimizer/SKILL.md` (Antigravity)
-- `~/.claude/skills/prompt-optimizer/SKILL.md` (Claude Code)
-- `~/.codex/skills/prompt-optimizer/SKILL.md` (Codex)
-- `~/.cursor/skills/prompt-optimizer/SKILL.md` (Cursor)
+Adjust the list to the agents you use. After this you can call it manually in any of them, for example `/prompt-optimizer make a deck introducing the new product` or "optimize this prompt: ...".
 
-### Optional Automatic Hook (Antigravity)
+### 2. Automatic routing (optional hooks)
 
-1. Copy `hooks/prompt-optimizer-agy.js` to `~/.gemini/config/hooks/prompt-optimizer-agy.js` and `chmod +x` it.
-2. Merge `hooks/hooks.json.example` into `~/.gemini/config/hooks.json`.
-3. Controls: `/prompt-optimizer on | off | status | default on | default off`, or prefix a message with `原文：` / `raw:` to bypass once.
+A hook runs before every message and tells the agent to apply the skill. Hooks need Node.js 18+.
+
+| Agent | Automatic hook | Notes |
+| --- | --- | --- |
+| Antigravity | yes | `hooks/prompt-optimizer-agy.js` |
+| Claude Code | yes | `hooks/prompt-optimizer-hook.js claude` |
+| Codex | yes | `hooks/prompt-optimizer-hook.js codex`; you must trust the new hook |
+| Cursor | no | its prompt hook cannot add context to the model; use the skill manually |
+| Grok | not tested | use the skill manually |
+
+**Antigravity**
+
+```bash
+mkdir -p ~/.gemini/config/hooks
+cp hooks/prompt-optimizer-agy.js ~/.gemini/config/hooks/
+```
+
+Add this to `~/.gemini/config/hooks.json` (merge with your existing entries, see `hooks/hooks.json.example`):
+
+```json
+"prompt-optimizer": {
+  "PreInvocation": [
+    { "type": "command", "command": "node ~/.gemini/config/hooks/prompt-optimizer-agy.js prompt", "timeout": 5 }
+  ]
+}
+```
+
+**Claude Code**
+
+```bash
+mkdir -p ~/.agents/hooks
+cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
+```
+
+Merge `hooks/claude-settings.example.json` into `~/.claude/settings.json`. Claude Code may ask you to approve the new hook; open `/hooks` to review it.
+
+**Codex**
+
+```bash
+mkdir -p ~/.agents/hooks
+cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
+```
+
+Merge `hooks/codex-hooks.example.json` into `~/.codex/hooks.json` and make sure hooks are enabled (`hooks = true` under `[features]` in `~/.codex/config.toml`). **Codex does not run a new hook until you trust it**: open `/hooks` in Codex and approve `prompt-optimizer-hook.js`. After that, start a new session.
+
+To check that it is active, send a vague task such as `make a deck introducing the new product`. The hook creates `~/.agents/hooks-state/prompt-optimizer/` the first time it runs (Antigravity: `~/.gemini/config/hooks/state/prompt-optimizer/`).
+
+## Controls
+
+- `/prompt-optimizer on | off | status`: switch auto mode for the current session.
+- `/prompt-optimizer default on | off`: default for new sessions (default is `on`).
+- `/prompt-optimizer <text>`: force one rewrite even when auto mode is off.
+- Start a message with `raw:` to skip the rewrite once.
+
+## Language support
+
+The skill and the rewrite work in any language. The hook skips obvious replies without calling the model: acknowledgements are recognized in English, Chinese, Spanish, French, German, Japanese, Korean and Russian, and delegation phrases ("you decide", "go ahead") in English and Chinese. Any other language, or any other phrasing, simply goes through the model's own REWRITE or SKIP decision, which is silent for skipped messages, so the only difference is a small amount of extra context. Recognizing the confirmation reply does not depend on language: a short reply made of a heading and a quoted prompt counts as the optimized prompt.
+
+## Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `PROMPT_OPTIMIZER_SKILL_PATH` | path to `SKILL.md` that the hook tells the agent to read |
+| `PROMPT_OPTIMIZER_STATE_DIR` | state folder of the Claude Code and Codex hook |
+| `AGY_HOOK_STATE_DIR` | state folder of the Antigravity hook |
 
 ## Test
 
 ```bash
-node tests/test-hook.js
+node tests/test-hook.js              # Antigravity hook
+node tests/test-cross-host-hook.js   # Claude Code and Codex hook
 ```
+
+## Limitations
+
+- Whether to rewrite is a model judgment, not a guarantee.
+- Without a hook the skill only runs when you ask for it.
+- Hooks cannot see the agent's final answer quality; they only decide routing and track the confirmation turn.

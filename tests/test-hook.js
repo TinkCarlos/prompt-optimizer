@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const HOOK_SCRIPT = path.join(__dirname, '..', 'hooks', 'prompt-optimizer-agy.js');
+const HOOK_SCRIPT = process.env.PROMPT_OPTIMIZER_HOOK || [path.join(__dirname, '..', 'hooks', 'prompt-optimizer-agy.js'), path.join(os.homedir(), '.gemini', 'config', 'hooks', 'prompt-optimizer-agy.js')].find((p) => fs.existsSync(p));
 const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'prompt-optimizer-test-'));
 
 function runHook(payload, rawOverride) {
@@ -38,7 +38,7 @@ try {
   });
   const routerText = getInjectedText(res);
   assert(routerText.includes('[PROMPT-OPTIMIZER ROUTER]'), '1a. Expected router for short Chinese task');
-  assert(routerText.includes('改写') && routerText.includes('不改写'), '1b. Expected binary routing options');
+  assert(routerText.includes('REWRITE') && routerText.includes('SKIP'), '1b. Expected binary routing options');
 
   // 2. Duplicate call in same turn returns {}
   res = runHook({
@@ -155,7 +155,7 @@ try {
     lastUserInput: '/prompt-optimizer 帮我分析这份报表',
   });
   const explicitText = getInjectedText(res);
-  assert(explicitText.includes('[PROMPT-OPTIMIZER EXPLICIT]') && explicitText.includes('跳过「改写/不改写」分流'), '10c. Expected explicit /prompt-optimizer to bypass router even when off');
+  assert(explicitText.includes('[PROMPT-OPTIMIZER EXPLICIT]') && explicitText.includes('Skip the REWRITE/SKIP routing'), '10c. Expected explicit /prompt-optimizer to bypass router even when off');
 
   res = runHook({
     conversationId: convA,
@@ -360,7 +360,24 @@ try {
   res = runHook({ conversationId: toolConv, transcriptPath: toolTx, initialNumSteps: 5, lastUserInput: '再帮我写一份复盘文档' });
   assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '21b. Tool-only previous turn must not be treated as pending confirmation');
 
-  console.log('All 21 prompt-optimizer hook test groups passed.');
+  // 22. Language-neutral detection: a localized optimized prompt (Spanish) is still recognized as pending confirmation
+  writeTx([
+    { step_index: 20, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'hazme una presentación' },
+    { step_index: 21, type: 'PLANNER_RESPONSE', content: '### Prompt optimizado\n\n> Prepara una presentación del producto para decidir si lo lanzamos.\n\n¿Usar este prompt? (aprobar / editar / usar original)' },
+    { step_index: 22, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: 'aprobar' },
+  ]);
+  res = runHook({ conversationId: 'conv-es', transcriptPath: txPath, initialNumSteps: 23, lastUserInput: '<USER_REQUEST>\naprobar\n</USER_REQUEST>' });
+  assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER PENDING-REPLY]'), '22. Expected PENDING-REPLY for a localized optimized prompt');
+
+  // 23. "raw data ..." is a normal task; only "raw:" bypasses; non-CJK acknowledgements are skipped locally
+  res = runHook({ conversationId: 'conv-raw', initialNumSteps: 1, lastUserInput: '<USER_REQUEST>\nraw data analysis of Q3 sales\n</USER_REQUEST>' });
+  assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '23a. "raw data ..." must not bypass');
+  res = runHook({ conversationId: 'conv-raw', initialNumSteps: 2, lastUserInput: '<USER_REQUEST>\nraw: fix the typo in the title\n</USER_REQUEST>' });
+  assert.deepStrictEqual(res, {}, '23b. "raw:" bypasses');
+  res = runHook({ conversationId: 'conv-raw', initialNumSteps: 3, lastUserInput: '<USER_REQUEST>\ngracias\n</USER_REQUEST>' });
+  assert.deepStrictEqual(res, {}, '23c. Spanish acknowledgement is skipped locally');
+
+  console.log('All 23 prompt-optimizer hook test groups passed.');
 } finally {
   fs.rmSync(tmpState, { recursive: true, force: true });
 }
