@@ -27,7 +27,7 @@ Agent:  ### Optimized Prompt
 You:    approve          -> the agent runs the optimized prompt
 ```
 
-The rewrite applies a few ideas drawn from public advice on prompting current models (for example from Felix Rieseberg of Anthropic): ask for the goal behind the task, point at first-hand material and the methods practitioners actually use instead of "act as an expert", name an external way to verify the result, and describe the deliverable by what it must achieve for its audience.
+The rewrite applies a few ideas drawn from public advice on prompting current models (for example from Felix Rieseberg of Anthropic): ask for the goal behind the task, translate everyday layperson descriptions into accurate domain terminology without over-specifying (for example, "looks like glass" -> glassmorphism), point at first-hand material and the methods practitioners actually use instead of "act as an expert", name an external way to verify the result, and describe the deliverable by what it must achieve for its audience.
 
 ### What gets skipped
 
