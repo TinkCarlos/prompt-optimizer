@@ -377,7 +377,55 @@ try {
   res = runHook({ conversationId: 'conv-raw', initialNumSteps: 3, lastUserInput: '<USER_REQUEST>\ngracias\n</USER_REQUEST>' });
   assert.deepStrictEqual(res, {}, '23c. Spanish acknowledgement is skipped locally');
 
-  console.log('All 23 prompt-optimizer hook test groups passed.');
+  // 24. /skill, $skill or @file followed by a task body routes normally; bare calls and host control commands still skip
+  for (const [idx, msg] of [
+    '/frontend-design-lab 帮我优化这个skill，让页面更有质感',
+    '$frontend-design-lab 帮我做一个落地页',
+    '@src/app.tsx 帮我看看性能瓶颈在哪',
+  ].entries()) {
+    const cid = 'conv-prefixed-' + idx;
+    res = runHook({ conversationId: cid, initialNumSteps: 1, lastUserInput: `<USER_REQUEST>\n${msg}\n</USER_REQUEST>` });
+    assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), `24a.${idx} Expected ROUTER for "${msg}"`);
+  }
+  for (const [idx, cmd] of ['/frontend-design-lab', '/ponytail off', '/ponytail:ponytail full', '/compact focus on tests', '/model opus'].entries()) {
+    res = runHook({ conversationId: 'conv-ctrl', initialNumSteps: 10 + idx, lastUserInput: `<USER_REQUEST>\n${cmd}\n</USER_REQUEST>` });
+    assert.deepStrictEqual(res, {}, `24b.${idx} Expected {} for control/bare command "${cmd}"`);
+  }
+
+  // 25. Queued / unflushed multi-turn transcript race:
+  // Turn 2 arrives before transcript flushes step 441 (still ends at step 410 + reply 440):
+  // Invocation 1 must fire ROUTER immediately (not falsely deduped against step 410),
+  // Invocation 2 after step 441 flushes must dedupe, and a later Turn 3 with identical text must fire again.
+  const qConv = 'conv-queued-race';
+  const qTx = path.join(tmpState, 'queued-transcript.jsonl');
+  const writeQ = (rows) => fs.writeFileSync(qTx, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  writeQ([
+    { step_index: 410, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n帮我把首页改成暗黑风格\n</USER_REQUEST>' },
+  ]);
+  res = runHook({ conversationId: qConv, transcriptPath: qTx, initialNumSteps: 411, lastUserInput: '<USER_REQUEST>\n帮我把首页改成暗黑风格\n</USER_REQUEST>' });
+  assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '25a. Turn 1 fires ROUTER');
+  writeQ([
+    { step_index: 410, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n帮我把首页改成暗黑风格\n</USER_REQUEST>' },
+    { step_index: 440, type: 'PLANNER_RESPONSE', content: '已完成首页暗黑风格改造。' },
+  ]);
+  res = runHook({ conversationId: qConv, transcriptPath: qTx, initialNumSteps: 442, lastUserInput: '<USER_REQUEST>\n开头几个模块太普通了，换个酷炫的样式\n</USER_REQUEST>' });
+  assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '25b. Turn 2 fires ROUTER immediately even before transcript flushes step 441');
+  writeQ([
+    { step_index: 410, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n帮我把首页改成暗黑风格\n</USER_REQUEST>' },
+    { step_index: 440, type: 'PLANNER_RESPONSE', content: '已完成首页暗黑风格改造。' },
+    { step_index: 441, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n开头几个模块太普通了，换个酷炫的样式\n</USER_REQUEST>' },
+  ]);
+  res = runHook({ conversationId: qConv, transcriptPath: qTx, initialNumSteps: 446, lastUserInput: '<USER_REQUEST>\n开头几个模块太普通了，换个酷炫的样式\n</USER_REQUEST>' });
+  assert.deepStrictEqual(res, {}, '25c. Turn 2 invocation 2 after step 441 flushes must dedupe');
+  writeQ([
+    { step_index: 441, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n开头几个模块太普通了，换个酷炫的样式\n</USER_REQUEST>' },
+    { step_index: 454, type: 'PLANNER_RESPONSE', content: '已重做前三个模块。' },
+    { step_index: 455, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n开头几个模块太普通了，换个酷炫的样式\n</USER_REQUEST>' },
+  ]);
+  res = runHook({ conversationId: qConv, transcriptPath: qTx, initialNumSteps: 456, lastUserInput: '<USER_REQUEST>\n开头几个模块太普通了，换个酷炫的样式\n</USER_REQUEST>' });
+  assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '25d. Turn 3 with identical text at a new step fires ROUTER');
+
+  console.log('All 25 prompt-optimizer hook test groups passed.');
 } finally {
   fs.rmSync(tmpState, { recursive: true, force: true });
 }

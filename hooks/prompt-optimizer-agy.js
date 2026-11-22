@@ -18,7 +18,14 @@ const SHORT_FOLLOWUP_RE = /^(?:(?:下面|接下来|下一步|然后|后面)(?:�
 // Delegation and bare context verbs ("你自己决定", "按你推荐的做", "修复") only make sense against the previous turn.
 const CONTEXT_ONLY_RE = /^(?:you decide|up to you|your call|do what you (?:recommend|suggest)|go ahead|do it|(?:fix|deploy|ship|publish|commit|push)(?: it)?|你(?:自己|来)?(?:决定|定吧?|看着办|安排吧?)|听你的|按照?你(?:的)?(?:推荐|建议|说|方案|计划)的?(?:做|来|办|改)?(?:吧)?|(?:那就)?(?:修复|修吧|改吧|部署|部署上线|上线|发布|提交|推送|开始|开始吧|开干|做吧|干吧|去做吧)(?:吧)?)$/i;
 const SINGLE_LINE_CMD_RE = /^(?:git|npm|pnpm|yarn|bun|pytest|vitest|jest|ls|pwd|cd|cat|rg|grep)\b/i;
+// Skip bare single-token /skill, @mention, $skill calls and built-in host control commands,
+// but let `/skill <task body>` or `@file <task body>` pass through to the router.
+const CONTROL_CMD_RE = /^\/(?:compact|clear|plan|goal|schedule|browser|grill-me|teamwork|learn|boost|hooks?|help|status|model|models|config|permissions|mcp|memory|plugins?|login|logout|resume|rewind|rename|cost|doctor|init|exit|quit|ponytail(?:[:：][\w-]+)?)(?:\s|$)/i;
 const OPTIMIZER_HEADING_RE = /(?:^|\n)#{2,4}\s*(?:优化后的提问|Optimized Prompt)/i;
+
+function isControlCommand(text) {
+  return /^[/@$][^\s]+$/.test(text) || CONTROL_CMD_RE.test(text);
+}
 
 // Language-neutral: a short reply that is a heading plus a blockquote is the optimized prompt, whatever the language.
 function looksLikeOptimizedPrompt(text) {
@@ -55,10 +62,24 @@ function isExplicitUserInput(d) {
   return Boolean(d && d.type === 'USER_INPUT' && (d.source === 'USER_EXPLICIT' || d.source == null));
 }
 
+function sameUserMessage(row, curText) {
+  if (!row || !curText) return false;
+  const rowText = extractUserText(row.content);
+  if (!rowText) return false;
+  if (rowText === curText) return true;
+  if (Array.isArray(row.truncated_fields) && row.truncated_fields.includes('content')) {
+    const prefix = rowText.slice(0, 80);
+    return prefix.length >= 20 && curText.startsWith(prefix);
+  }
+  return false;
+}
+
 function inspectTranscript(payload) {
-  const result = { stepKey: null, hasTranscriptTruth: false, lastReplyWasOptimizerPrompt: false };
+  const result = { stepKey: null, stepNum: null, hasTranscriptTruth: false, lastReplyWasOptimizerPrompt: false };
   const tpath = String(payload.transcriptPath || '');
   if (!tpath) return result;
+  const curText = extractUserText(payload.lastUserInput);
+  const digest = crypto.createHash('sha256').update(String(payload.lastUserInput || '')).digest('hex').slice(0, 16);
   try {
     // Long agent turns can exceed any fixed tail window, so widen until the latest
     // user input and the reply before it are both visible.
@@ -89,10 +110,15 @@ function inspectTranscript(payload) {
         }
       }
 
+      // If the transcript has not yet flushed the current queued/new USER_INPUT,
+      // latestUserIdx still points to the previous turn; scan from the tail for its reply.
+      const currentFlushed = latestUserIdx >= 0 && (!curText || sameUserMessage(rows[latestUserIdx], curText));
+      const scanFrom = currentFlushed ? latestUserIdx - 1 : rows.length - 1;
+
       let decided = false;
       let replyIsPrompt = false;
-      if (latestUserIdx >= 0) {
-        for (let i = latestUserIdx - 1; i >= 0; i--) {
+      if (latestUserIdx >= 0 || start === 0) {
+        for (let i = scanFrom; i >= 0; i--) {
           const d = rows[i];
           if (isExplicitUserInput(d)) {
             decided = true;
@@ -109,9 +135,11 @@ function inspectTranscript(payload) {
         if (start === 0) decided = true;
       }
 
-      if (latestUserIdx >= 0 && decided) {
-        const step = rows[latestUserIdx].step_index;
-        result.stepKey = step != null ? 'step:' + step : null;
+      if ((latestUserIdx >= 0 || start === 0) && decided) {
+        if (currentFlushed && rows[latestUserIdx].step_index != null) {
+          result.stepNum = Number(rows[latestUserIdx].step_index);
+          result.stepKey = 'step:' + result.stepNum + ':' + digest;
+        }
         result.hasTranscriptTruth = true;
         result.lastReplyWasOptimizerPrompt = replyIsPrompt;
         break;
@@ -122,11 +150,14 @@ function inspectTranscript(payload) {
   return result;
 }
 
-function turnKeys(payload, stepKey) {
+function turnKeys(payload, tx) {
   const digest = crypto.createHash('sha256').update(String(payload.lastUserInput || '')).digest('hex').slice(0, 16);
-  const initKey = payload.initialNumSteps != null ? 'init:' + String(payload.initialNumSteps) + ':' + digest : null;
+  const initialNumSteps = payload.initialNumSteps != null ? Number(payload.initialNumSteps) : null;
+  const initKey = initialNumSteps != null ? 'init:' + String(initialNumSteps) + ':' + digest : null;
+  const stepKey = tx && tx.stepKey ? tx.stepKey : null;
+  const stepNum = tx && tx.stepNum != null ? tx.stepNum : null;
   const fallbackKey = stepKey || initKey || 'raw:' + digest;
-  return { stepKey, initKey, fallbackKey };
+  return { stepKey, stepNum, initKey, digest, initialNumSteps, fallbackKey };
 }
 
 function atomicWrite(file, content) {
@@ -136,8 +167,8 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
-function dedupeTurn(convId, payload, stepKey) {
-  const cur = turnKeys(payload, stepKey);
+function dedupeTurn(convId, payload, tx) {
+  const cur = turnKeys(payload, tx);
   const file = path.join(STATE_DIR, 'turn-' + hashId(convId) + '.json');
   try {
     const prev = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -145,6 +176,12 @@ function dedupeTurn(convId, payload, stepKey) {
       if ((cur.initKey && prev.initKey === cur.initKey) ||
           (cur.stepKey && prev.stepKey === cur.stepKey) ||
           prev.fallbackKey === cur.fallbackKey) {
+        return false;
+      }
+      // First invocation ran before the new USER_INPUT flushed to transcript; upgrade key on the second invocation.
+      if (!prev.stepKey && cur.stepKey && prev.digest === cur.digest &&
+          cur.stepNum != null && prev.initialNumSteps != null && cur.stepNum <= prev.initialNumSteps) {
+        try { atomicWrite(file, JSON.stringify(cur)); } catch (_) {}
         return false;
       }
     }
@@ -213,9 +250,9 @@ function gateInstruction(isExplicit) {
   }
   return [
     '[PROMPT-OPTIMIZER ROUTER]',
-    "Silently decide, using the conversation context, whether the user's latest message is worth rewriting: REWRITE or SKIP.",
-    '- SKIP when: venting, complaints or chit-chat; a confirmation, rejection, option pick, delegation ("you decide") or nudge that only makes sense against the previous turn; a clear single-step tweak or simple factual question; feedback about your previous reply or about this tool; a message that is already clear and complete; or one that already names a specific skill or workflow. On SKIP: do not read SKILL.md, do not mention routing or rewriting in any way, and just answer or act normally.',
-    `- REWRITE only when the message is a substantive new task AND its wording is vague, colloquial or lacks a method or verification handle (or it pastes an error or material with no instruction), so that a rewrite clearly improves the result. On REWRITE: read ${SKILL_PATH} and follow it; reply in the user's language with only the optimized-prompt heading, one short blockquote paragraph and one confirmation line (approve / edit / use original). No change notes or extra suggestions. Do not execute the original task or modify files this turn.`,
+    "Silently decide, using the conversation context, whether the user's latest message is worth rewriting: REWRITE or SKIP. Apply this equally to Turn 1 AND follow-up turns in an ongoing conversation.",
+    `- REWRITE whenever the message asks for substantive work (including follow-up requirements, redesigns, bug fixes, feature additions or revisions on the current work) AND its wording is vague, subjective, colloquial or lacks concrete criteria, method or verification (e.g. "make it prettier, no green", "too plain, make it cooler", "why doesn't hover play all of them", or a pasted error/screenshot with no instruction). Criticizing current output AND asking for vague/subjective changes is REWRITE, not SKIP. On REWRITE: read ${SKILL_PATH} and follow it; ground follow-up rewrites in the established context; reply in the user's language with only the optimized-prompt heading, one short blockquote paragraph and one confirmation line (approve / edit / use original). No change notes or extra suggestions. Do not execute the task or modify files this turn.`,
+    '- SKIP only when: pure venting/complaints/chit-chat with no actionable request; pure confirmations, rejections, option picks, delegations ("you decide") or nudges ("continue", "deploy"); a clear single-step edit or simple factual question; pure meta-commentary about this tool with no new work; a message whose goal, criteria and constraints are already concrete; or a bare skill/command call (or one with already-concrete instructions). Note: `/skill`, `$skill` or `@file` followed by a vague request—or asking to edit that skill itself—is still eligible for REWRITE (keep the original reference intact). On SKIP: do not read SKILL.md, do not mention routing or rewriting, and just answer or act normally.',
   ].join('\n');
 }
 
@@ -276,7 +313,7 @@ function cmdPrompt(payload) {
 
   const convId = String(payload.conversationId || '');
   const tx = inspectTranscript(payload);
-  if (!dedupeTurn(convId, payload, tx.stepKey)) return out({});
+  if (!dedupeTurn(convId, payload, tx)) return out({});
 
   const text = extractUserText(raw).trim();
   if (!text) return out({});
@@ -287,7 +324,7 @@ function cmdPrompt(payload) {
     return handleCommand(convId, session, cmdMatch[1] || '');
   }
 
-  if (/^[/@$]/.test(text)) {
+  if (isControlCommand(text)) {
     if (session.awaitingConfirm) {
       writeSession(convId, { ...session, awaitingConfirm: false });
     }

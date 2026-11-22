@@ -15,15 +15,16 @@ First decide whether a rewrite is worth it. If it is, turn the user's words into
   - Running inline before a normal reply: on **SKIP**, stay completely silent about it. Do not mention routing or rewriting, do not load the rest of this skill, just answer or act. On **REWRITE**, continue to section 2.
   - The user names this skill explicitly (`/prompt-optimizer <text>`, "optimize this prompt"): skip the decision and go to section 2.
 - **Always SKIP (judge with the conversation context)**
-  1. Venting, complaints, chit-chat, greetings.
-  2. Confirmations, rejections, option picks, delegation or nudges that only make sense against the previous turn ("yes", "option 2", "you decide", "do what you recommended", "continue", "fix it", "deploy").
-  3. A clear single-step tweak or a simple factual question ("make the button blue", "which file is this in?").
-  4. Feedback about your previous reply or about this tool ("too long", "is this conflicting with something?").
-  5. A message that is already structured, with a clear goal and constraints.
-  6. A message that already names a specific skill or workflow.
-- **REWRITE only when both hold**
-  1. It is a substantive task that needs analysis, debugging, creation, design, planning or coding.
-  2. The wording is vague or colloquial, lacks a method or a way to verify the result, or pastes an error, screenshot or material with no instruction, so a rewrite will clearly improve what the AI does.
+  1. Pure venting, complaints, chit-chat or greetings with **no actionable request** ("ugh it broke again", "good morning").
+  2. Pure confirmations, rejections, option picks, delegations or nudges ("yes", "option 2", "you decide", "do what you recommended", "continue", "fix it", "deploy").
+  3. A clear, unambiguous single-step edit or simple factual question ("change this button to `#2563eb`", "which file defines X?", "did you deploy it?").
+  4. Pure meta-commentary about this tool or asking how something worked, with no new build/design/fix work.
+  5. A message that is already concrete and specific (clear target, explicit criteria/constraints and verifiable outcome).
+  6. A bare skill/command call with no task body, or a skill call whose instructions are already concrete and complete. (If the user leads with `/skill`, `$skill` or `@file` followed by a vague task—or asks to edit or optimize that skill itself—still evaluate it for REWRITE and keep the original reference intact.)
+- **REWRITE whenever both hold (first turn OR follow-up turns in the same conversation)**
+  1. It asks the AI to do substantive work—including a **follow-up requirement, redesign, bug fix, feature addition or revision** in an ongoing conversation, not only the first turn.
+  2. The wording is vague, subjective, colloquial, or lacks concrete criteria, method or verification (for example: "make it look better, no green background", "these sections look too plain, make them cooler", "why does only one animation play, make hover play all of them"), or pastes an error, screenshot or material with no instruction.
+  - *Important*: A follow-up message that criticizes the current output **and** asks for changes with subjective or vague criteria is **REWRITE**, not SKIP. When rewriting a follow-up turn, ground it in the concrete module, page or feature already established in the conversation without inventing unstated requirements.
 
 ## 2. Step two: rewrite rules
 

@@ -20,8 +20,15 @@ const ACK_LEAD_RE = /^(?:同意|确认|好的|好了|弄好了|搞定了|继续|
 const SHORT_FOLLOWUP_RE = /^(?:(?:下面|接下来|下一步|然后|后面)(?:该|要)?(?:做什么|怎么做|干什么|呢)|下一步(?:呢)?|继续吧|然后呢)[？?！!。.]*$/i;
 const CONTEXT_ONLY_RE = /^(?:you decide|up to you|your call|do what you (?:recommend|suggest)|go ahead|do it|(?:fix|deploy|ship|publish|commit|push)(?: it)?|你(?:自己|来)?(?:决定|定吧?|看着办|安排吧?)|听你的|按照?你(?:的)?(?:推荐|建议|说|方案|计划)的?(?:做|来|办|改)?(?:吧)?|(?:那就)?(?:修复|修吧|改吧|部署|部署上线|上线|发布|提交|推送|开始|开始吧|开干|做吧|干吧|去做吧)(?:吧)?)$/i;
 const SINGLE_LINE_CMD_RE = /^(?:git|npm|pnpm|yarn|bun|pytest|vitest|jest|ls|pwd|cd|cat|rg|grep)\b/i;
-const MACHINE_RE = /^\s*(?:<\\?~?(?:hook_prompt|system-reminder|task-notification|cross-session-message|side-sessions-event|ci-monitor-event)\b|\[(?:KROUTER_PROACTIVE|LMEMORY_PROACTIVE|PROMPT-OPTIMIZER)\b)/i;
+// Skip bare single-token /skill, @mention, $skill calls and built-in host control commands,
+// but let `/skill <task body>` or `@file <task body>` pass through to the router.
+const CONTROL_CMD_RE = /^\/(?:compact|clear|plan|goal|schedule|browser|grill-me|teamwork|learn|boost|hooks?|help|status|model|models|config|permissions|mcp|memory|plugins?|login|logout|resume|rewind|rename|cost|doctor|init|exit|quit|ponytail(?:[:：][\w-]+)?)(?:\s|$)/i;
+const MACHINE_RE = /^\s*(?:<\\?~?(?:hook_prompt|system-reminder|task-notification|cross-session-message|side-sessions-event|ci-monitor-event|send_user_message_question_reply)\b|\[(?:KROUTER_PROACTIVE|LMEMORY_PROACTIVE|PROMPT-OPTIMIZER)\b)/i;
 const OPTIMIZER_HEADING_RE = /(?:^|\n)#{2,4}\s*(?:优化后的提问|Optimized Prompt)/i;
+
+function isControlCommand(text) {
+  return /^[/@$][^\s]+$/.test(text) || CONTROL_CMD_RE.test(text);
+}
 
 // Language-neutral: a short reply that is a heading plus a blockquote is the optimized prompt, whatever the language.
 function looksLikeOptimizedPrompt(text) {
@@ -179,9 +186,9 @@ function gateInstruction(isExplicit) {
   }
   return [
     '[PROMPT-OPTIMIZER ROUTER]',
-    "Silently decide, using the conversation context, whether the user's latest message is worth rewriting: REWRITE or SKIP.",
-    '- SKIP when: venting, complaints or chit-chat; a confirmation, rejection, option pick, delegation ("you decide") or nudge that only makes sense against the previous turn; a clear single-step tweak or simple factual question; feedback about your previous reply or about this tool; a message that is already clear and complete; or one that already names a specific skill or workflow. On SKIP: do not read SKILL.md, do not mention routing or rewriting in any way, and just answer or act normally.',
-    `- REWRITE only when the message is a substantive new task AND its wording is vague, colloquial or lacks a method or verification handle (or it pastes an error or material with no instruction), so that a rewrite clearly improves the result. On REWRITE: read ${SKILL_PATH} and follow it; reply in the user's language with only the optimized-prompt heading, one short blockquote paragraph and one confirmation line (approve / edit / use original). No change notes or extra suggestions. Do not execute the original task or modify files this turn.`,
+    "Silently decide, using the conversation context, whether the user's latest message is worth rewriting: REWRITE or SKIP. Apply this equally to Turn 1 AND follow-up turns in an ongoing conversation.",
+    `- REWRITE whenever the message asks for substantive work (including follow-up requirements, redesigns, bug fixes, feature additions or revisions on the current work) AND its wording is vague, subjective, colloquial or lacks concrete criteria, method or verification (e.g. "make it prettier, no green", "too plain, make it cooler", "why doesn't hover play all of them", or a pasted error/screenshot with no instruction). Criticizing current output AND asking for vague/subjective changes is REWRITE, not SKIP. On REWRITE: read ${SKILL_PATH} and follow it; ground follow-up rewrites in the established context; reply in the user's language with only the optimized-prompt heading, one short blockquote paragraph and one confirmation line (approve / edit / use original). No change notes or extra suggestions. Do not execute the task or modify files this turn.`,
+    '- SKIP only when: pure venting/complaints/chit-chat with no actionable request; pure confirmations, rejections, option picks, delegations ("you decide") or nudges ("continue", "deploy"); a clear single-step edit or simple factual question; pure meta-commentary about this tool with no new work; a message whose goal, criteria and constraints are already concrete; or a bare skill/command call (or one with already-concrete instructions). Note: `/skill`, `$skill` or `@file` followed by a vague request—or asking to edit that skill itself—is still eligible for REWRITE (keep the original reference intact). On SKIP: do not read SKILL.md, do not mention routing or rewriting, and just answer or act normally.',
   ].join('\n');
 }
 
@@ -262,7 +269,7 @@ function main() {
     return handleCommand(sessionId, session, cmdMatch[1] || '');
   }
 
-  if (/^[/@$]/.test(prompt)) {
+  if (isControlCommand(prompt)) {
     if (session.awaitingConfirm) {
       writeSession(sessionId, { ...session, awaitingConfirm: false });
     }

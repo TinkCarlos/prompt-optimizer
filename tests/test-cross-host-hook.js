@@ -52,9 +52,22 @@ try {
   ctx = context('codex', { session_id: 's3', transcript_path: codexTx, prompt: 'aprobar' });
   assert(ctx.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
 
-  // Silent paths: delegation, acknowledgements, machine prompts, "raw:" bypass, other slash commands.
-  for (const prompt of ['you decide', 'gracias', '[KROUTER_PROACTIVE] hi', 'raw: fix the typo', '/compact']) {
+  // Silent paths: delegation, acknowledgements, machine prompts (including Codex question replies), "raw:" bypass, bare/control slash commands.
+  for (const prompt of ['you decide', 'gracias', '[KROUTER_PROACTIVE] hi', '<send_user_message_question_reply> [{"questionItem":"1"}]', 'raw: fix the typo', '/compact', '/compact focus on tests', '/ponytail off', '/frontend-design-lab']) {
     assert.strictEqual(run('codex', { session_id: 's4', prompt }), '', prompt);
+  }
+
+  // Follow-up multi-turn router text explicitly covers follow-up turns (not only Turn 1).
+  const multiCtx = context('codex', { session_id: 's-multi', prompt: '开头几个模块太普通了，换个酷炫的样式' });
+  assert(multiCtx.includes('[PROMPT-OPTIMIZER ROUTER]') && multiCtx.includes('follow-up turns'), 'Expected follow-up turn guidance in ROUTER');
+
+  // /skill, $skill or @file followed by a real task body must enter ROUTER.
+  for (const [idx, prompt] of [
+    '/frontend-design-lab 帮我优化这个skill，让页面更有质感',
+    '$frontend-design-lab 帮我做个官网',
+    '@src/app.tsx 帮我重构这部分状态管理',
+  ].entries()) {
+    assert(context('claude', { session_id: 's-pref-' + idx, prompt }).includes('[PROMPT-OPTIMIZER ROUTER]'), prompt);
   }
 
   // "raw data ..." is a normal task, not a bypass.
