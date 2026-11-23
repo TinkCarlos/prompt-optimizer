@@ -75,6 +75,7 @@ A hook or extension runs before every message and tells the agent to apply the s
 | Agent | Automatic trigger | Notes |
 | --- | --- | --- |
 | Antigravity | yes | `hooks/prompt-optimizer-agy.js` (`next` defaults to `on`) |
+| T3 Code | yes | inherits Claude Code, Codex and Pi hooks automatically (hooks unwrap `<t3_code_instructions>` / `<user_request>`); for T3 Code's isolated Antigravity provider, run `node scripts/install-t3.js` |
 | Claude Code | yes | `hooks/prompt-optimizer-hook.js claude` (`next` defaults to `on`) |
 | Codex | yes | `hooks/prompt-optimizer-hook.js codex` (`next` defaults to `off` to avoid duplicating Codex's native input suggestion; you must trust the new hook) |
 | Pi | yes | `pi install git:github.com/TinkCarlos/prompt-optimizer` or `hooks/prompt-optimizer-pi.js` (`next` defaults to `on`) |
@@ -132,6 +133,20 @@ cp hooks/prompt-optimizer-pi.js ~/.pi/agent/extensions/prompt-optimizer.js
 ```
 
 Run `/reload` in an active Pi session or start a new session.
+
+**T3 Code**
+
+T3 Code routes each thread through its selected provider:
+
+- **Claude Code / Codex / Pi** threads inherit your existing host hooks and skills automatically; all three hooks unwrap T3 Code's `<t3_code_instructions>` / `<user_request>` / `<runtime_info>` envelope so commands (`/prompt-optimizer off|status`), `raw:` bypasses, and local filters work cleanly.
+- **Antigravity** threads use an isolated config folder under `~/.t3/userdata/providers/antigravity/<id>/config/` (which symlinks `skills` but does not mount `hooks.json` by default). Run the helper script to install/update the hook and merge `"prompt-optimizer"` into each T3 Antigravity `hooks.json` without touching other entries:
+
+```bash
+node scripts/install-t3.js --dry-run
+node scripts/install-t3.js
+```
+
+To remove only `prompt-optimizer` from T3 Code's Antigravity configs, run `node scripts/install-t3.js --uninstall`.
 
 To check that it is active, send a vague task such as `make a deck introducing the new product`. The hook creates `~/.agents/hooks-state/prompt-optimizer/` the first time it runs (Antigravity: `~/.gemini/config/hooks/state/prompt-optimizer/`). In Pi, session mode is stored in the active session branch and `default-mode.txt` is stored under `~/.agents/hooks-state/prompt-optimizer/`.
 

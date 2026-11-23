@@ -143,7 +143,7 @@ function looksLikeOptimizedPrompt(text) {
 function unwrapHarnessPrompt(text) {
   const s = String(text || '').trim();
   if (!s || !s.includes('<user_request>')) return s;
-  const m = s.match(/^(?:<t3_code_instructions>[\s\S]*?<\/t3_code_instructions>\s*)?<user_request>([\s\S]*)<\/user_request>(?:\s*<runtime_info>[\s\S]*?<\/runtime_info>)?\s*$/);
+  const m = s.match(/^(?:<(?:t3_code_instructions|runtime_info)\b[^>]*>[\s\S]*?<\/(?:t3_code_instructions|runtime_info)>\s*)*<user_request>([\s\S]*)<\/user_request>(?:\s*<(?:t3_code_instructions|runtime_info)\b[^>]*>[\s\S]*?<\/(?:t3_code_instructions|runtime_info)>)*\s*$/);
   return m ? m[1].trim() : s;
 }
 

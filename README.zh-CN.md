@@ -74,6 +74,7 @@ Hook 或 Extension 在每条消息之前运行，提示助手应用这个 Skill�
 | 助手 | 自动触发 | 说明 |
 | --- | --- | --- |
 | Antigravity | 支持 | `hooks/prompt-optimizer-agy.js`（`next` 默认 `on`） |
+| T3 Code | 支持 | Claude Code、Codex、Pi 线程自动复用对应宿主 Hook（均已自动解包 T3 的 `<t3_code_instructions>` / `<user_request>` 外壳）；Antigravity 线程需运行 `node scripts/install-t3.js` 写入隔离目录 |
 | Claude Code | 支持 | `hooks/prompt-optimizer-hook.js claude`（`next` 默认 `on`） |
 | Codex | 支持 | `hooks/prompt-optimizer-hook.js codex`（`next` 默认 `off`，避免与 Codex 原生输入框建议重复；需要你信任新 Hook） |
 | Pi | 支持 | `pi install git:github.com/TinkCarlos/prompt-optimizer` 或 `hooks/prompt-optimizer-pi.js`（`next` 默认 `on`） |
@@ -131,6 +132,20 @@ cp hooks/prompt-optimizer-pi.js ~/.pi/agent/extensions/prompt-optimizer.js
 ```
 
 在运行中的 Pi 会话输入 `/reload`，或新开会话即可生效。
+
+**T3 Code**
+
+T3 Code 按线程所选的 Provider 加载对应配置：
+
+- **Claude Code / Codex / Pi** 线程自动继承本机宿主 Hook 与 Skill；三端 Hook 已自动解包 T3 Code 的 `<t3_code_instructions>` / `<user_request>` / `<runtime_info>` 外壳，`/prompt-optimizer off|status`、`raw:` 和本地过滤均可正常工作。
+- **Antigravity** 线程使用独立的 `~/.t3/userdata/providers/antigravity/<id>/config/` 目录（默认只软链 `skills`，不挂载 `hooks.json`）。运行内置安装脚本即可一键把 `prompt-optimizer` 合并写入 T3 Antigravity 的 `hooks.json`（保留 `lmemory` 等其他已有条目）：
+
+```bash
+node scripts/install-t3.js --dry-run
+node scripts/install-t3.js
+```
+
+如需仅移除 T3 Antigravity 里的 `prompt-optimizer` 条目，运行 `node scripts/install-t3.js --uninstall`。
 
 怎样确认已生效：发一句含糊的任务，比如 `帮我做个PPT介绍新产品`。Hook 第一次运行时会创建 `~/.agents/hooks-state/prompt-optimizer/`（Antigravity 是 `~/.gemini/config/hooks/state/prompt-optimizer/`；Pi 的会话开关记在当前会话树中，`default-mode.txt` 记在 `~/.agents/hooks-state/prompt-optimizer/`）。注意：像“审查某某功能有没有问题”这种本来就清晰的请求，Hook/扩展虽然在运行，模型也会静默跳过，所以不要用它来验证。
 
