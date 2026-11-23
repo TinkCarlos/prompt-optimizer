@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "node ~/.gemini/config/hooks/prompt-optimizer-agy.js prompt",
+        "command": "/usr/local/bin/node /path/to/home/.gemini/config/hooks/prompt-optimizer-agy.js prompt",
         "timeout": 5
       }
     ]

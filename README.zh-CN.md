@@ -7,7 +7,8 @@
 - **保真。** 不改变你的意图、范围、数字和约束；缺失的信息只会标出，不会替你编。
 - **有选择。** 情绪发泄、“同意”、“你自己决定”、单步微调、本来就清晰的话，都会静默跳过；只有实质性但表述含糊的任务才改写。
 - **简短。** 只输出一段话加一句确认，不是模板，也不是长篇说明。
-- **任何语言。** 改写结果和确认语都跟随你使用的语言。
+- **接续建议（按需触发）。** 默认静默；仅当完成任务后确实存在明确、高价值的下一步动作，或把明确的线下/外部操作交给你去完成并带结果回来继续时，才结合当前上下文与会话里已载入的历史记忆/规则，在回复末尾附 1 条可直接复制发送的回传或续接提示词（遇到明确分叉时给 2~3 条备选方向），不需要时直接不给。
+- **任何语言。** 改写结果、确认语和下一步建议都跟随你使用的语言。
 - **多助手通用。** Skill 本身可用于 Claude Code、Codex、Pi、Cursor、Grok、Antigravity；可选的 Hook 或 Extension 能让它在 Antigravity、Claude Code、Codex 和 Pi 里自动触发。
 
 ## 效果
@@ -32,17 +33,24 @@
 
 | 你输入 | 结果 |
 | --- | --- |
-| `同意`、`选方案2`、`继续`、`你自己决定`、`修复` | 跳过，助手直接继续 |
+| `同意`、`选方案2`、`继续`、`你自己决定`、`修复` | 跳过改写，助手直接继续 |
 | `烦死了又崩了` | 跳过，正常回复 |
 | `把按钮改成蓝色` | 跳过，本身就是清晰的单步操作 |
-| `太长了，精简点`（对上一条回复的反馈） | 跳过 |
+| `把总结精简成 3 条要点`（明确的后续微调） | 跳过 |
+| `开头几个模块太普通了，改酷一点`（主观/含糊的后续修改） | 改写，并等你确认 |
 | 含糊的多步任务，或只贴了报错没有说明 | 改写，并等你确认 |
+
+### 回复末尾的下一步提示词建议
+
+这一步**默认静默、宁缺毋滥**：不会为了给建议而强行建议。当（且 `next` 开启）模型完成实质性任务且存在明确高价值的后续动作，或明确把一项具体的线下/外部操作（如按清单截图、导出文件、完成手动配置）交给你去执行并带结果回来继续既定流程时，才会在回复末尾用分隔线和纯文本附带 1 条可直接复制发送的下一步或回传续接指令（仅在出现明显分叉时用短列表给 2~3 条备选方向），依据刚刚完成的工作、交接清单、未收尾的检查或风险，以及会话里已经载入的历史记忆与项目规则生成。
+
+如果当前任务已经完整结束无需再做，或处于优化确认轮、向你提出开放式澄清追问、因登录/付款受阻、纯闲聊、开关配置回复、极简问答，都会保持完全静默。因为建议本身已经具体可验证，复制发回后会直接执行，不会再次触发改写。
 
 ### 效果到底怎么样
 
-如实说明：目前**没有基准测试**。已有的是上面的行为，有 Hook 的自动化测试（分流、确认轮次识别、开关、长会话）覆盖，以及日常使用中对真实输出的人工检查。最终答案是否更好取决于你的任务和模型；改写刻意保持很短，读起来成本低，不满意回复 `按原话` 即可。是否改写由模型判断，偶尔会改写你认为已经清晰的话，这时回复 `按原话`，或在消息开头加 `原文：` / `raw:`。
+如实说明：目前**没有基准测试**。已有的是上面的行为，有 Hook 的自动化测试（分流、确认轮次识别、开关、长会话）覆盖，以及日常使用中对真实输出的人工检查。最终答案是否更好取决于你的任务和模型；改写刻意保持很短，读起来成本低，不满意回复 `按原话` 即可。是否改写由模型判断，偶尔会改写你认为已经清晰的话，这时回复 `按原话`，或在消息开头加 `原文：` / `直接：` / `raw:`。
 
-开销：装了 Hook 后，每条非简单的消息会多带一段几百 token 的分流指令；`同意`、`继续` 这类消息由 Hook 在本地直接过滤，不增加任何内容。
+开销：装了 Hook 后，每条非简单的消息会多带一段几百 token 的分流指令；`同意`、`好的` 这类纯确认消息由 Hook 在本地直接过滤，不增加任何内容；`继续`、`你自己决定` 这类可执行的跟进指令会在本地跳过改写分流（`next` 关闭时不增加任何内容，`next` 开启时仅附带简短的可选下一步建议指令）。
 
 ## 安装
 
@@ -65,10 +73,10 @@ Hook 或 Extension 在每条消息之前运行，提示助手应用这个 Skill�
 
 | 助手 | 自动触发 | 说明 |
 | --- | --- | --- |
-| Antigravity | 支持 | `hooks/prompt-optimizer-agy.js` |
-| Claude Code | 支持 | `hooks/prompt-optimizer-hook.js claude` |
-| Codex | 支持 | `hooks/prompt-optimizer-hook.js codex`；需要你信任新 Hook |
-| Pi | 支持 | `pi install git:github.com/TinkCarlos/prompt-optimizer` 或 `hooks/prompt-optimizer-pi.js` |
+| Antigravity | 支持 | `hooks/prompt-optimizer-agy.js`（`next` 默认 `on`） |
+| Claude Code | 支持 | `hooks/prompt-optimizer-hook.js claude`（`next` 默认 `on`） |
+| Codex | 支持 | `hooks/prompt-optimizer-hook.js codex`（`next` 默认 `off`，避免与 Codex 原生输入框建议重复；需要你信任新 Hook） |
+| Pi | 支持 | `pi install git:github.com/TinkCarlos/prompt-optimizer` 或 `hooks/prompt-optimizer-pi.js`（`next` 默认 `on`） |
 | Cursor | 不支持 | 它的提交前 Hook 不能给模型追加上下文，请手动调用 Skill |
 | Grok | 未测试 | 请手动调用 Skill |
 
@@ -79,12 +87,12 @@ mkdir -p ~/.gemini/config/hooks
 cp hooks/prompt-optimizer-agy.js ~/.gemini/config/hooks/
 ```
 
-把下面这段合并进 `~/.gemini/config/hooks.json`（保留已有条目，参考 `hooks/hooks.json.example`）：
+把下面这段合并进 `~/.gemini/config/hooks.json`（保留已有条目，参考 `hooks/hooks.json.example`；在 macOS GUI 应用中启动时，如默认 PATH 不含 `node` 或不展开 `~`，请把 `node` 和 `~` 替换为绝对路径，例如 `/opt/homebrew/bin/node` 和 `/Users/<你的用户名>`）：
 
 ```json
 "prompt-optimizer": {
   "PreInvocation": [
-    { "type": "command", "command": "node ~/.gemini/config/hooks/prompt-optimizer-agy.js prompt", "timeout": 5 }
+    { "type": "command", "command": "/opt/homebrew/bin/node /Users/<你的用户名>/.gemini/config/hooks/prompt-optimizer-agy.js prompt", "timeout": 5 }
   ]
 }
 ```
@@ -128,14 +136,16 @@ cp hooks/prompt-optimizer-pi.js ~/.pi/agent/extensions/prompt-optimizer.js
 
 ## 控制命令
 
-- `/prompt-optimizer on | off | status`：开关当前会话的自动模式。
-- `/prompt-optimizer default on | off`：新会话的默认值（默认 `on`）。
+- `/prompt-optimizer on | off | status`：开关当前会话的自动模式（`off` 会同时关闭改写和下一步建议）并查看当前状态。
+- `/prompt-optimizer default on | off`：新会话的改写默认值（默认 `on`）。
+- `/prompt-optimizer next on | off`：单独开关当前会话的回复后下一步建议（即使在 `/prompt-optimizer off` 后执行 `/prompt-optimizer next on`，也可只保留下一步建议）。
+- `/prompt-optimizer next default on | off`：新会话的下一步建议默认值（Antigravity、Claude Code、Pi 默认 `on`；Codex 默认 `off`）。
 - `/prompt-optimizer <内容>`：即使自动模式关闭，也强制改写一次。
-- 消息开头加 `原文：` 或 `raw:`，本次跳过改写。
+- 消息开头加 `原文：`、`直接：` 或 `raw:`，本次跳过改写。
 
 ## 语言支持
 
-Skill 和改写支持任何语言。Hook 会在不调用模型的情况下跳过明显的回复：确认类短语识别英语、中文、西班牙语、法语、德语、日语、韩语、俄语，“你自己决定”“go ahead”这类授权短语识别英语和中文。其他语言或其他说法会交给模型自己判断改写还是跳过，跳过时同样是静默的，区别只是多带一点上下文。确认轮次的识别与语言无关：由一个标题加一段引用提问构成的短回复就算作优化后的提问。
+Skill 和改写支持任何语言。Hook 会在本地跳过改写分流而不额外调用模型判断：纯确认类短语识别英语、中文、西班牙语、法语、德语、日语、韩语、俄语（不增加任何内容）；“继续”“你自己决定”“go ahead”这类简短续接与授权短语识别英语和中文（跳过改写分流，`next` 开启时仅附带简短的下一步建议指令）。其他语言或其他说法会交给模型自己判断改写还是跳过，跳过时同样是静默的，区别只是多带一点上下文。确认轮次的识别与语言无关：由一个标题紧接一段引用提问再跟一句确认语构成的短回复就算作优化后的提问。
 
 ## 配置
 
@@ -148,10 +158,13 @@ Skill 和改写支持任何语言。Hook 会在不调用模型的情况下跳过
 ## 测试
 
 ```bash
+npm test                             # 全部 Hook 与 Extension 测试
 node tests/test-hook.js              # Antigravity Hook
 node tests/test-cross-host-hook.js   # Claude Code 和 Codex Hook
 node tests/test-pi-extension.js      # Pi Extension
 ```
+
+`SKILL.md` 的行为级回归评测样例见 `tests/eval-cases.json`。
 
 ## 局限
 

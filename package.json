@@ -4,6 +4,9 @@
   "description": "Automatic prompt rewriting skill and hooks/extensions for AI coding agents.",
   "keywords": ["pi-package", "agent-skills", "prompt-optimizer"],
   "license": "MIT",
+  "scripts": {
+    "test": "node tests/test-hook.js && node tests/test-cross-host-hook.js && node tests/test-pi-extension.js"
+  },
   "pi": {
     "extensions": ["./hooks/prompt-optimizer-pi.js"],
     "skills": ["."]

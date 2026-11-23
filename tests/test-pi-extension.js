@@ -90,12 +90,19 @@ function createHarness(initialBranch = []) {
 
 (async () => {
 try {
-  // 1. Vague Turn 1 task injects [PROMPT-OPTIMIZER ROUTER] with the resolved skill path from systemPromptOptions.skills.
+  // 1. Vague Turn 1 task injects [PROMPT-OPTIMIZER ROUTER] + [PROMPT-OPTIMIZER NEXT-STEP] with resolved skill path.
   {
     const h = createHarness();
     h.emit('session_start', {});
     const { section } = h.runTurn('帮我做个PPT介绍新产品');
     assert(section && section.includes('[PROMPT-OPTIMIZER ROUTER]'));
+    assert(
+      section.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
+      section.includes('Optional—omit by default') &&
+      section.includes('never suggest just for the sake of suggesting') &&
+      section.includes('concrete offline/external action') &&
+      section.includes('open-ended clarifying questions')
+    );
     assert(section.includes('/mock/skills/prompt-optimizer/SKILL.md'));
     assert(section.includes('follow-up turns'));
   }
@@ -171,12 +178,13 @@ try {
     assert(section.includes('follow-up turns'));
   }
 
-  // 5. Silent paths clear stale sections.
+  // 5. Silent paths clear stale sections; actionable follow-ups get NEXT-STEP only; false-positive footer is not treated as pending confirmation.
   {
     const h = createHarness();
     h.emit('session_start', {});
+    const actionRes = h.runTurn('you decide');
+    assert(actionRes.section && !actionRes.section.includes('[PROMPT-OPTIMIZER ROUTER]') && actionRes.section.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
     for (const [rawInput, expanded] of [
-      ['you decide', 'you decide'],
       ['同意', '同意'],
       ['gracias', 'gracias'],
       ['raw: fix typo', 'raw: fix typo'],
@@ -209,6 +217,16 @@ try {
     });
     h.emit('before_agent_start', evCustom);
     assert.strictEqual(evCustom.systemPromptOptions.sections.prompt_optimizer, undefined);
+
+    const hFooter = createHarness([
+      {
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'text', text: '### Done\nUpdated handler.\n\n---\n**Next prompt**:\n> Run the API tests' }] },
+      },
+    ]);
+    hFooter.emit('session_start', {});
+    const footerTurn = hFooter.runTurn('also check login validation');
+    assert(footerTurn.section && footerTurn.section.includes('[PROMPT-OPTIMIZER ROUTER]') && !footerTurn.section.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
   }
 
   // 6. /skill:name <vague task>, image-only turn, and "raw data analysis" all trigger ROUTER.
@@ -233,16 +251,18 @@ try {
     const cmd = h.commands.get('prompt-optimizer');
     assert(cmd, 'prompt-optimizer command must be registered');
     assert(cmd.getArgumentCompletions('def').some((c) => c.value === 'default off'));
+    assert(cmd.getArgumentCompletions('next').some((c) => c.value === 'next default off'));
 
     await cmd.handler('off', h.ctx);
     assert.strictEqual(h.runTurn('investigate the failing checkout flow').section, undefined);
 
-    // Explicit command still forces EXPLICIT rewrite even while auto mode is off, and next turn handles confirmation.
+    // Explicit command still forces EXPLICIT rewrite even while auto mode is off (no NEXT-STEP), and next turn handles confirmation.
     await cmd.handler('plan our launch', h.ctx);
     assert.strictEqual(h.sent[0].text, 'plan our launch');
     const evExplicit = h.makeEvent('plan our launch');
     h.emit('before_agent_start', evExplicit);
     assert(evExplicit.systemPromptOptions.sections.prompt_optimizer.includes('[PROMPT-OPTIMIZER EXPLICIT]'));
+    assert(!evExplicit.systemPromptOptions.sections.prompt_optimizer.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
     h.branch.push({
       type: 'message',
@@ -263,11 +283,24 @@ try {
     });
     assert.strictEqual(h.runTurn('make a deck for the team').section, undefined);
 
+    // off + next on enables next-only mode; next off disables it; status reports both.
+    await cmd.handler('next on', h.ctx);
+    const nextOnlySec = h.runTurn('make a deck for the team').section;
+    assert(nextOnlySec && !nextOnlySec.includes('[PROMPT-OPTIMIZER ROUTER]') && nextOnlySec.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+    await cmd.handler('status', h.ctx);
+    assert(h.notifications.at(-1).msg.includes('rewrite: off') && h.notifications.at(-1).msg.includes('next-step: on'));
+    await cmd.handler('next off', h.ctx);
+    assert.strictEqual(h.runTurn('make a deck for the team').section, undefined);
+
     await cmd.handler('on', h.ctx);
-    assert(h.runTurn('make a deck for the team').section.includes('[PROMPT-OPTIMIZER ROUTER]'));
+    // Explicit nextMode off persists across rewrite on until next on is called.
+    const routeNoNextSec = h.runTurn('make a deck for the team').section;
+    assert(routeNoNextSec && routeNoNextSec.includes('[PROMPT-OPTIMIZER ROUTER]') && !routeNoNextSec.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+    await cmd.handler('next on', h.ctx);
+    assert(h.runTurn('make a deck for the team').section.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
     await cmd.handler('status', h.ctx);
-    assert(h.notifications.at(-1).msg.includes('session: on'));
+    assert(h.notifications.at(-1).msg.includes('rewrite: on'));
 
     // Branch restore: setting default off and switching to a branch with no explicit override inherits default off.
     await cmd.handler('default off', h.ctx);
@@ -275,15 +308,23 @@ try {
     h.emit('session_switch', {});
     assert.strictEqual(h.runTurn('make a deck for the team').section, undefined);
 
-    // Switching to a branch with `mode: "on"` restores ON even when default is off.
+    // Switching to a branch with legacy `{ mode: "on" }` and `{ nextMode: "off" }` restores both.
     h.branch.push({ type: 'custom', customType: ext.ENTRY_TYPE, data: { mode: 'on' } });
+    h.branch.push({ type: 'custom', customType: ext.ENTRY_TYPE, data: { nextMode: 'off' } });
     h.emit('session_tree', {});
-    assert(h.runTurn('make a deck for the team').section.includes('[PROMPT-OPTIMIZER ROUTER]'));
+    const treeRestored = h.runTurn('make a deck for the team').section;
+    assert(treeRestored.includes('[PROMPT-OPTIMIZER ROUTER]') && !treeRestored.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
+    // next default off / on inheritance across fresh branch
     await cmd.handler('default on', h.ctx);
+    await cmd.handler('next default off', h.ctx);
     h.branch.length = 0;
     h.emit('session_branch', {});
-    assert(h.runTurn('make a deck for the team').section.includes('[PROMPT-OPTIMIZER ROUTER]'));
+    const branchNextOff = h.runTurn('make a deck for the team').section;
+    assert(branchNextOff.includes('[PROMPT-OPTIMIZER ROUTER]') && !branchNextOff.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+
+    await cmd.handler('next default on', h.ctx);
+    assert(h.runTurn('make a deck for the team').section.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   }
 
   // 8. Fallback when systemPromptOptions.sections is missing returns { systemPrompt }.
@@ -299,6 +340,73 @@ try {
       systemPromptOptions: {},
     });
     assert(ret && typeof ret.systemPrompt === 'string' && ret.systemPrompt.includes('[PROMPT-OPTIMIZER ROUTER]'));
+  }
+
+  // 9. Regression guards: meta-question, ACK_LEAD real tasks, looksLikeOptimizedPrompt false positives,
+  //    tool-only Turn 2 boundary, multi-round edit while OFF, queued busy follow-up non-stealing, and next off->off->on.
+  {
+    const h = createHarness();
+    h.emit('session_start', {});
+
+    const metaSec = h.runTurn('$prompt-optimizer 这个skill还有什么问题么？').section;
+    assert(metaSec && metaSec.includes('[PROMPT-OPTIMIZER ROUTER]') && !metaSec.includes('[PROMPT-OPTIMIZER EXPLICIT]'));
+
+    const ackTaskSec = h.runTurn('好的，帮我把首页改成暗黑风格').section;
+    assert(ackTaskSec && ackTaskSec.includes('[PROMPT-OPTIMIZER ROUTER]'));
+
+    // Short heading + prose + callout is NOT an optimized prompt
+    assert.strictEqual(ext.looksLikeOptimizedPrompt('### Done\nUpdated auth.\n> Note: clear cookies.'), false);
+    assert.strictEqual(ext.looksLikeOptimizedPrompt(`${'x'.repeat(2500)}\n\n### Optimized Prompt\nDetails.`), false);
+
+    // Tool-only Turn 2 must NOT resurrect Turn 1's optimized prompt
+    const hTool = createHarness([
+      { type: 'message', message: { role: 'user', content: '帮我做个PPT' } },
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: '### Optimized Prompt\n\n> Draft deck.\n\nUse this prompt?' }] } },
+      { type: 'message', message: { role: 'user', content: 'approve' } },
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash' }] } },
+      { type: 'message', message: { role: 'toolResult', content: 'ok' } },
+    ]);
+    hTool.emit('session_start', {});
+    const afterTool = hTool.runTurn('帮我写个周报').section;
+    assert(afterTool && afterTool.includes('[PROMPT-OPTIMIZER ROUTER]') && !afterTool.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+
+    // Multi-round edit while OFF keeps awaitingExplicitConfirm until normal assistant reply
+    const hOff = createHarness();
+    hOff.emit('session_start', {});
+    const cmd = hOff.commands.get('prompt-optimizer');
+    await cmd.handler('off', hOff.ctx);
+    await cmd.handler('plan launch', hOff.ctx);
+    const ev1 = hOff.makeEvent('plan launch');
+    hOff.emit('before_agent_start', ev1);
+    assert(ev1.systemPromptOptions.sections.prompt_optimizer.includes('[PROMPT-OPTIMIZER EXPLICIT]'));
+    hOff.branch.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: '### Optimized Prompt\n\n> V1.\n\nUse this prompt?' }] } });
+    assert(hOff.runTurn('edit: focus on Q3').section.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+    hOff.branch.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: '### Optimized Prompt\n\n> V2.\n\nUse this prompt?' }] } });
+    assert(hOff.runTurn('approve').section.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+    hOff.branch.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Launch plan done.' }] } });
+    assert.strictEqual(hOff.runTurn('make a deck').section, undefined);
+
+    // Queued explicit prompt while busy is not stolen by an intervening turn
+    const hBusy = createHarness();
+    hBusy.emit('session_start', {});
+    hBusy.ctx.isIdle = () => false;
+    await hBusy.commands.get('prompt-optimizer').handler('draft release notes', hBusy.ctx);
+    assert.deepStrictEqual(hBusy.sent[0], { text: 'draft release notes', options: { deliverAs: 'followUp' } });
+    const intervening = hBusy.runTurn('帮我重构登录流程').section;
+    assert(intervening.includes('[PROMPT-OPTIMIZER ROUTER]') && !intervening.includes('[PROMPT-OPTIMIZER EXPLICIT]'));
+    const queuedEv = hBusy.makeEvent('draft release notes');
+    hBusy.emit('before_agent_start', queuedEv);
+    assert(queuedEv.systemPromptOptions.sections.prompt_optimizer.includes('[PROMPT-OPTIMIZER EXPLICIT]'));
+
+    // next off -> off -> on preserves explicit next off
+    const hKeep = createHarness();
+    hKeep.emit('session_start', {});
+    const keepCmd = hKeep.commands.get('prompt-optimizer');
+    await keepCmd.handler('next off', hKeep.ctx);
+    await keepCmd.handler('off', hKeep.ctx);
+    await keepCmd.handler('on', hKeep.ctx);
+    const keepSec = hKeep.runTurn('make a deck').section;
+    assert(keepSec.includes('[PROMPT-OPTIMIZER ROUTER]') && !keepSec.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   }
 
   console.log('All Pi extension unit tests passed.');

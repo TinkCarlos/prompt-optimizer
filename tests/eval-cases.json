@@ -1,0 +1,95 @@
+{
+  "description": "Behavioral evaluation cases for SKILL.md (routing accuracy, layperson-to-domain translation, hard-entity fidelity, multi-turn follow-ups, and next-step silence).",
+  "cases": [
+    {
+      "id": "skip-venting",
+      "category": "routing",
+      "context": [],
+      "user_input": "ugh it broke again",
+      "expected_route": "SKIP",
+      "assertions": ["No rewrite heading or routing mention", "Normal empathetic reply"]
+    },
+    {
+      "id": "skip-concrete-followup",
+      "category": "routing",
+      "context": ["Assistant drafted a 6-bullet summary."],
+      "user_input": "Cut the summary to 3 bullet points and keep the latency numbers.",
+      "expected_route": "SKIP",
+      "assertions": ["Executes immediately without confirmation turn"]
+    },
+    {
+      "id": "rewrite-subjective-followup",
+      "category": "routing",
+      "context": ["Assistant built a pricing section with 3 cards."],
+      "user_input": "这个价格模块看起来太普通了，换得更有质感一点",
+      "expected_route": "REWRITE",
+      "assertions": [
+        "Grounded in the pricing section from context",
+        "Translates vague visual critique into concrete hierarchy/contrast/state criteria",
+        "Does not force an unmentioned framework or WebGL/PBR stack",
+        "Chinese output, heading + blockquote + confirmation line only"
+      ]
+    },
+    {
+      "id": "rewrite-layperson-to-domain",
+      "category": "domain-terms",
+      "context": [],
+      "user_input": "输入框打字时停一下再搜，别每个字都发请求",
+      "expected_route": "REWRITE",
+      "assertions": [
+        "Uses input debounce (防抖) naturally in Chinese while keeping observable behavior clear",
+        "Does not lock in an unmentioned library",
+        "Preserves 100% intent without inventing an arbitrary ms number"
+      ]
+    },
+    {
+      "id": "rewrite-hard-entity-fidelity",
+      "category": "fidelity",
+      "context": [],
+      "user_input": "$frontend-design-lab 帮我把 src/pages/BillingPage.tsx 里的 ERR_STRIPE_402 提示改得更清晰，参考 https://docs.stripe.com/error-codes",
+      "expected_route": "REWRITE",
+      "assertions": [
+        "Keeps `$frontend-design-lab`, `src/pages/BillingPage.tsx`, `ERR_STRIPE_402`, and `https://docs.stripe.com/error-codes` verbatim",
+        "Does not translate identifiers or paths"
+      ]
+    },
+    {
+      "id": "skip-meta-question",
+      "category": "routing",
+      "context": [],
+      "user_input": "$prompt-optimizer 这个skill还有什么问题么？",
+      "expected_route": "SKIP",
+      "assertions": ["Answers directly by auditing the skill instead of rewriting the question"]
+    },
+    {
+      "id": "explicit-optimize-only",
+      "category": "output-format",
+      "context": [],
+      "user_input": "/prompt-optimizer 只帮我优化这句话不要执行：把截图里的文字提出来整理成表格",
+      "expected_route": "REWRITE",
+      "assertions": [
+        "Uses OCR terminology naturally",
+        "Outputs only the optimized prompt text without confirmation line"
+      ]
+    },
+    {
+      "id": "next-step-silent-on-complete",
+      "category": "next-step",
+      "context": ["User asked a self-contained question: which file defines resolveModes?"],
+      "user_input": "which file defines resolveModes?",
+      "expected_route": "SKIP",
+      "assertions": ["Omits the --- next-step suggestion block completely"]
+    },
+    {
+      "id": "next-step-handoff",
+      "category": "next-step",
+      "context": ["Assistant asked the user to capture 4 mobile screenshots and send them back to continue store submission."],
+      "user_input": "continue",
+      "expected_route": "SKIP",
+      "assertions": [
+        "Appends one copy-ready return prompt in user voice naming the 4 screenshots and next check",
+        "Uses --- and bold label without ###, >, or code fences"
+      ]
+    }
+  ]
+}

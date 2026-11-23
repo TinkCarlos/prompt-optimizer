@@ -1,7 +1,7 @@
 ---
 name: prompt-optimizer
 description: >-
-  Works in any language. Before acting on a user message, decide from the conversation context whether it is worth rewriting (REWRITE or SKIP). Venting, confirmations, single-step tweaks and already-clear messages are skipped silently. When a rewrite is worth it, translate layperson descriptions into accurate domain terms and restate the request as one short, high-signal prompt in the user's own language, preserving intent, scope and constraints 100%, and ask the user to confirm before executing. Use for automatic pre-routing, or when the user asks to "optimize my prompt", "polish this prompt" or runs /prompt-optimizer.
+  Any-language prompt router and rewriter. Silently decide REWRITE or SKIP from context (skipping venting, confirmations, clear single-step edits and concrete messages). On REWRITE, translate layperson wording into accurate domain terms as one short, high-signal prompt preserving intent, scope, constraints and exact identifiers 100%, then wait for confirmation. Optionally append a concise copy-ready next-step prompt after substantive tasks or predictable user-action handoffs (silent by default). Use for automatic pre-routing, "optimize my prompt", "polish this prompt", or /prompt-optimizer.
 ---
 
 # Prompt Optimizer
@@ -19,16 +19,16 @@ First decide whether a rewrite is worth it. If it is, turn the user's words into
   2. Pure confirmations, rejections, option picks, delegations or nudges ("yes", "option 2", "you decide", "do what you recommended", "continue", "fix it", "deploy").
   3. A clear, unambiguous single-step edit or simple factual question ("change this button to `#2563eb`", "which file defines X?", "did you deploy it?").
   4. Pure meta-commentary about this tool or asking how something worked, with no new build/design/fix work.
-  5. A message that is already concrete and specific (clear target, explicit criteria/constraints and verifiable outcome).
+  5. A message that is already concrete and specific (clear target, explicit criteria/constraints and verifiable outcome, including a concrete prompt copied from a prior next-step suggestion).
   6. A bare skill/command call with no task body, or a skill call whose instructions are already concrete and complete. (If the user leads with `/skill`, `$skill` or `@file` followed by a vague task—or asks to edit or optimize that skill itself—still evaluate it for REWRITE and keep the original reference intact.)
 - **REWRITE whenever both hold (first turn OR follow-up turns in the same conversation)**
   1. It asks the AI to do substantive work—including a **follow-up requirement, redesign, bug fix, feature addition or revision** in an ongoing conversation, not only the first turn.
-  2. The wording is vague, subjective, colloquial, uses everyday layperson descriptions where precise domain terminology removes ambiguity (for example: "make a page that looks like glass", "wait a moment after typing before searching", "make it look better, no green background", "these sections look too plain, make them cooler", "why does only one animation play, make hover play all of them"), or lacks concrete criteria, method or verification, or pastes an error, screenshot or material with no instruction.
+  2. The wording is vague, subjective, colloquial, uses everyday layperson descriptions where precise domain terminology removes ambiguity (for example: "make a page that looks like glass", "wait a moment after typing before searching", "this section feels too plain, give it more visual polish", "make hover play the animation across all cards instead of only one"), or lacks concrete criteria, method or verification, or pastes an error, screenshot or material with no instruction.
   - *Important*: A follow-up message that criticizes the current output **and** asks for changes with subjective or vague criteria is **REWRITE**, not SKIP. When rewriting a follow-up turn, ground it in the concrete module, page or feature already established in the conversation without inventing unstated requirements.
 
 ## 2. Step two: rewrite rules
 
-- **100% fidelity.** Never change, add or widen the user's meaning, scope, numbers or constraints. If a critical fact is missing, do not invent it; mention the gap in a short clause only if it truly blocks the work.
+- **100% fidelity (including exact identifiers).** Never change, add or widen the user's meaning, scope, numbers or constraints. Preserve exact file paths, symbol names, URLs, error codes, CLI flags, quoted literals and `/skill`, `$skill` or `@file` references verbatim—never translate or paraphrase them. If a critical fact is missing, do not invent it; mention the gap in a short clause only if it truly blocks the work.
 - **Translate layperson wording into domain terms.** When the user describes an effect, behavior, symptom, style, workflow or tool need in plain everyday language, express it with the accurate domain terminology, established pattern, technique or tool category practitioners use so the executing model maps directly to the right concept with less ambiguity (for example: "looks like glass" -> glassmorphism with translucent frosted surfaces and backdrop blur; "wait after typing before searching" -> input debounce; "don't let two edits overwrite each other" -> optimistic locking or conflict detection; "pull text out of screenshots" -> OCR). Write the term naturally in the user's language, optionally pairing the widely used technical term in parentheses when it helps disambiguate, and keep the intended observable effect clear so a non-expert can immediately confirm you understood them. Never over-specify: do not guess an unverified root cause for a bug, do not silently lock in an unmentioned framework, library or vendor unless it is already established in the context, and do not pick an arbitrary specialist meaning when the user's phrasing is genuinely open.
 - **Keep the real signal, drop the noise.** For pasted errors, logs or long text keep only the lines that point at the cause or the goal. Drop unrelated fields (for example generic HTTP headers) and long IDs already shown earlier in the same conversation, unless the user will copy the prompt to another tool.
 - **One sentence a pro would write, not a memo.** Default to one natural paragraph of 1 to 4 sentences. No section templates ("Background / Inputs / Constraints"), no long lists unless the original message itself contains several independent requests. Remove stale boilerplate: "act as an expert", "think step by step".
@@ -36,7 +36,7 @@ First decide whether a rewrite is worth it. If it is, turn the user's words into
 - **Match the task type.**
   - Debugging: translate layperson symptoms into clear failure classes and diagnostic angles without guessing the root cause; keep core error/symptom, evidence from real logs, config and code, and a verifiable fix.
   - Coding: translate everyday behavior descriptions into standard software patterns, mechanisms or tool categories (without forcing an unmentioned stack); name target behavior and affected entry points, read current code first, smallest change, verify with a targeted test or run.
-  - Design / UI: translate colloquial visual or interaction descriptions into standard design styles, layout/hierarchy terms, interactive states and readability/contrast criteria; verify against the rendered UI and real interactions. When the user asks for bold, "cool", 3D or high-impact creative visuals, preserve a high technical/creative ceiling (such as real-time WebGL/shader scenes, PBR materials/lighting or spatial storytelling) instead of narrowing their request down to tame CSS hover/tilt tweaks or burying the creative goal under overly defensive restraint.
+  - Design / UI: translate colloquial visual or interaction descriptions into standard design styles, layout/hierarchy terms, interactive states and readability/contrast criteria; verify against the rendered UI and real interactions. Only when the user asks for bold, 3D or high-impact creative visuals, keep the creative ceiling high (preserving interactive 3D, canvas or spatial motion possibilities where fitting) instead of watering the request down to timid hover tweaks, while still avoiding locking in an unmentioned rendering stack.
   - Research or decision: name the core judgment, evaluation criteria and relevant domain metrics; rely on primary sources or real data and state assumptions.
   - Writing, slides, copy: keep the deliverable; turn vague tone or impact wishes into concrete editorial voice, structure and audience action (turn the noun into a verb), work from source material, cut filler. Do not add "do not guess" to creative work.
   - Broad goals: do not invent requirements; ask for the current state, the main bottleneck, the options and a concrete first step.
@@ -71,4 +71,40 @@ Use this prompt? (approve / edit / use original)
 ## 4. After the user replies
 
 - **Approve** (optionally with extra details): execute the final prompt immediately, do not optimize again. **Edit**: revise and show it again (if they say "edit and just run it", run it). **Use original**: execute the original wording exactly.
-- Commands (when a hook is installed): `/prompt-optimizer on | off | status | default on | default off`; `/prompt-optimizer <text>` forces one rewrite even when auto mode is off; start a message with `raw:` to bypass once.
+- Commands (when a hook is installed): `/prompt-optimizer on | off | status | default on | default off | next on | next off | next default on | next default off`; `/prompt-optimizer <text>` forces one rewrite even when auto mode is off; start a message with `raw:` (or localized equivalents such as `原文：` / `直接：`) to bypass once.
+
+## 5. After finishing a task: next-step prompt suggestions
+
+- **Default is silence (omit unless genuinely useful)**: Silently judge whether an obvious, high-value next prompt exists in two cases: (a) after completing a substantive task with concrete remaining verification, risks, or next steps; or (b) after handing the user a concrete offline/external action to complete and return with results to continue a known workflow (such as taking listed screenshots, exporting or gathering files, or finishing a manual setup/release step). If the task is self-contained/done or you have to stretch to think of one, omit this block completely—never suggest just for the sake of suggesting.
+- **When to stay silent (omit completely)**:
+  1. The task is complete/self-contained, or no concrete next step stands out (never invent filler like "want me to write a summary?").
+  2. Outputting an optimized-prompt confirmation turn (`### Optimized Prompt` or localized equivalent).
+  3. Asking open-ended clarifying questions whose answer you cannot predict (missing requirements, preferences, or unknown choices), or blocking on login, 2FA, CAPTCHA, or payment. (Concrete user-action handoffs whose return prompt is predictable are allowed.)
+  4. Pure chit-chat, greetings, venting, `/prompt-optimizer` config/status replies, or trivial one-line factual Q&A.
+- **How to write it (only when clearly helpful)**:
+  - Ground in what was just completed, any concrete action just handed to the user, remaining unverified or uncommitted items and risks, and any relevant history, project rules, or user workflow habits already loaded in the current session (do not run extra memory lookups just for suggestions, and never fabricate missing history).
+  - Write in the user's voice as a direct, copy-and-send prompt (1–2 concrete sentences naming the real target, action, and check — never meta-advice like "you could ask me to..."), so pasting it back executes immediately without triggering another rewrite. For a user-action handoff, phrase it as the exact return message when bringing the results back, specifying the exact items, counts/conditions, and immediate verification or next workflow step.
+  - When included, give **1** highest-value prompt (or **2–3** short `- ` options only when there is a real fork, for example verify/refine vs. commit/deploy).
+  - Always write the label and prompt(s) in the user's language.
+- **Format**: A `---` horizontal rule, one short bold localized label (for example, `**Suggested next prompt** (copy and send as-is):`), followed by plain text for 1 prompt or a `- ` bullet list for 2–3 prompts. Never use a `###` heading, `>` blockquote, or fenced code block (keeps wrapping compact and avoids colliding with confirmation-turn detection).
+
+### Next-step examples
+
+1. Single prompt (local fix ready to ship and verify):
+
+   ---
+   **Suggested next prompt** (copy and send as-is):
+   Commit and push this fix, deploy it, and re-run the checkout smoke test with the stale session fixture to confirm the new banner renders.
+
+2. Forked directions (2 options):
+
+   ---
+   **Suggested next prompts** (copy and send one):
+   - Run the end-to-end Playwright suite against staging and fix any remaining regressions before merging.
+   - Skip further edits and draft the release PR summary from the current diff and test output.
+
+3. User-action handoff (offline step with predictable return):
+
+   ---
+   **Suggested next prompt** (copy and send as-is):
+   Here are the 6 mobile screenshots you requested—check whether any need retaking, and if they look good, continue submitting the store listing.

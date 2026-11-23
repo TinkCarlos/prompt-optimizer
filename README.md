@@ -7,6 +7,7 @@ A skill that rewrites a vague request into one short, high-signal prompt before 
 - **Faithful.** It never changes your intent, scope, numbers or constraints. Missing facts are flagged, not invented.
 - **Selective.** Venting, "yes", "you decide", single-step tweaks and already-clear messages are skipped silently. Only substantive but vague tasks are rewritten.
 - **Short.** The output is one paragraph plus one confirmation line, not a template or a lecture.
+- **Next-step ready (optional).** Omitted by default; only when a concrete, high-value follow-up genuinely exists after completing a task—or after handing you a concrete offline/external step whose return prompt is predictable—it can append one ready-to-copy next prompt (or 2–3 short options at a real fork) grounded in the current context and loaded memory or rules.
 - **Any language.** The rewrite and the confirmation line follow the language you wrote in.
 - **Works across agents.** The skill itself runs in Claude Code, Codex, Pi, Cursor, Grok and Antigravity. Optional hooks or extensions make it trigger automatically in Antigravity, Claude Code, Codex and Pi.
 
@@ -33,17 +34,24 @@ The rewrite applies a few ideas drawn from public advice on prompting current mo
 
 | You type | Result |
 | --- | --- |
-| `yes`, `option 2`, `continue`, `you decide`, `fix it` | skipped, the agent just proceeds |
+| `yes`, `option 2`, `continue`, `you decide`, `fix it` | skipped for rewriting, the agent just proceeds |
 | `ugh, it broke again` | skipped, normal reply |
 | `make the button blue` | skipped, already a clear single step |
-| `too long, shorten it` (feedback on the last reply) | skipped |
+| `cut the summary to 3 bullet points` (clear follow-up edit) | skipped |
+| `these sections look too plain, make them cooler` (subjective follow-up revision) | rewritten, then confirmed |
 | a vague multi-step task, or a pasted error with no instruction | rewritten, then confirmed |
+
+### Post-turn next-step suggestions
+
+Suggestions are **optional and omitted by default**. When `next` is enabled and a concrete, high-value follow-up genuinely exists—either after completing a substantive task or after handing you a concrete offline/external action to complete and return with results (such as taking listed screenshots or gathering files)—the agent appends one ready-to-copy prompt at the end of the reply in plain text (or a `- ` bullet list with 2–3 short options when there is a real fork), grounded in what was just done, the handed-off action, remaining checks/risks, and any history or project rules already loaded in the session.
+
+It stays completely silent whenever a task is self-contained or done (never forcing filler suggestions), as well as during confirmation turns, open-ended clarifying questions whose answer cannot be predicted, login/payment gates, chit-chat, config replies, and trivial Q&A. Because the suggested prompt is already concrete, pasting it back executes immediately without triggering another rewrite.
 
 ### How well does it work
 
 Honest status: there is **no benchmark** yet. What exists is the behavior above, covered by an automated test suite for the hooks (routing, confirmation tracking, switches, long sessions), plus manual checks of real outputs in daily use. Whether the final answer is better depends on your task and model; the rewrite is deliberately small so it is cheap to read and easy to reject with `use original`. Routing is decided by the model, so it can occasionally rewrite something you consider clear; reply `use original` or start the message with `raw:`.
 
-Cost: with a hook installed, every non-trivial message carries a short routing instruction (a few hundred tokens). Messages such as `yes` or `continue` are filtered by the hook locally and add nothing.
+Cost: with a hook installed, every non-trivial message carries a short routing instruction (a few hundred tokens). Pure acknowledgements such as `yes` or `ok` are filtered by the hook locally and add nothing. Actionable follow-ups such as `continue` or `you decide` skip rewrite routing locally (adding nothing when `next` is off, or only the short optional next-step instruction when `next` is on).
 
 ## Install
 
@@ -66,10 +74,10 @@ A hook or extension runs before every message and tells the agent to apply the s
 
 | Agent | Automatic trigger | Notes |
 | --- | --- | --- |
-| Antigravity | yes | `hooks/prompt-optimizer-agy.js` |
-| Claude Code | yes | `hooks/prompt-optimizer-hook.js claude` |
-| Codex | yes | `hooks/prompt-optimizer-hook.js codex`; you must trust the new hook |
-| Pi | yes | `pi install git:github.com/TinkCarlos/prompt-optimizer` or `hooks/prompt-optimizer-pi.js` |
+| Antigravity | yes | `hooks/prompt-optimizer-agy.js` (`next` defaults to `on`) |
+| Claude Code | yes | `hooks/prompt-optimizer-hook.js claude` (`next` defaults to `on`) |
+| Codex | yes | `hooks/prompt-optimizer-hook.js codex` (`next` defaults to `off` to avoid duplicating Codex's native input suggestion; you must trust the new hook) |
+| Pi | yes | `pi install git:github.com/TinkCarlos/prompt-optimizer` or `hooks/prompt-optimizer-pi.js` (`next` defaults to `on`) |
 | Cursor | no | its prompt hook cannot add context to the model; use the skill manually |
 | Grok | not tested | use the skill manually |
 
@@ -80,12 +88,12 @@ mkdir -p ~/.gemini/config/hooks
 cp hooks/prompt-optimizer-agy.js ~/.gemini/config/hooks/
 ```
 
-Add this to `~/.gemini/config/hooks.json` (merge with your existing entries, see `hooks/hooks.json.example`):
+Add this to `~/.gemini/config/hooks.json` (merge with your existing entries, see `hooks/hooks.json.example`; in GUI-launched hosts on macOS, replace `node` and `~` with absolute paths such as `/opt/homebrew/bin/node` and `/Users/<you>` if `node` is not in the default PATH):
 
 ```json
 "prompt-optimizer": {
   "PreInvocation": [
-    { "type": "command", "command": "node ~/.gemini/config/hooks/prompt-optimizer-agy.js prompt", "timeout": 5 }
+    { "type": "command", "command": "/opt/homebrew/bin/node /Users/<you>/.gemini/config/hooks/prompt-optimizer-agy.js prompt", "timeout": 5 }
   ]
 }
 ```
@@ -129,14 +137,16 @@ To check that it is active, send a vague task such as `make a deck introducing t
 
 ## Controls
 
-- `/prompt-optimizer on | off | status`: switch auto mode for the current session.
-- `/prompt-optimizer default on | off`: default for new sessions (default is `on`).
+- `/prompt-optimizer on | off | status`: switch auto mode (`off` silences both rewrite and next-step suggestions) and inspect current settings.
+- `/prompt-optimizer default on | off`: default rewrite mode for new sessions (default is `on`).
+- `/prompt-optimizer next on | off`: toggle post-turn next-step suggestions for the current session (even when rewrite is `off`, `/prompt-optimizer next on` keeps suggestions active).
+- `/prompt-optimizer next default on | off`: default post-turn suggestion mode for new sessions (`on` for Antigravity, Claude Code, and Pi; `off` for Codex).
 - `/prompt-optimizer <text>`: force one rewrite even when auto mode is off.
 - Start a message with `raw:` to skip the rewrite once.
 
 ## Language support
 
-The skill and the rewrite work in any language. The hook skips obvious replies without calling the model: acknowledgements are recognized in English, Chinese, Spanish, French, German, Japanese, Korean and Russian, and delegation phrases ("you decide", "go ahead") in English and Chinese. Any other language, or any other phrasing, simply goes through the model's own REWRITE or SKIP decision, which is silent for skipped messages, so the only difference is a small amount of extra context. Recognizing the confirmation reply does not depend on language: a short reply made of a heading and a quoted prompt counts as the optimized prompt.
+The skill and the rewrite work in any language. The hook skips rewrite routing locally without asking the model to route: pure acknowledgements are recognized in English, Chinese, Spanish, French, German, Japanese, Korean and Russian (adding zero context), and short continuations or delegation phrases ("continue", "you decide", "go ahead") in English and Chinese (skipping rewrite routing, and carrying only the optional next-step instruction when `next` is on). Any other language, or any other phrasing, simply goes through the model's own REWRITE or SKIP decision, which is silent for skipped messages, so the only difference is a small amount of extra context. Recognizing the confirmation reply does not depend on language: a short reply made of a heading immediately followed by a blockquote and a confirmation line counts as the optimized prompt.
 
 ## Configuration
 
@@ -149,10 +159,13 @@ The skill and the rewrite work in any language. The hook skips obvious replies w
 ## Test
 
 ```bash
+npm test                             # all hook & extension suites
 node tests/test-hook.js              # Antigravity hook
 node tests/test-cross-host-hook.js   # Claude Code and Codex hook
 node tests/test-pi-extension.js      # Pi extension
 ```
+
+Behavioral evaluation cases for `SKILL.md` live in `tests/eval-cases.json`.
 
 ## Limitations
 
