@@ -43,7 +43,9 @@ The rewrite applies a few ideas drawn from public advice on prompting current mo
 
 ### Post-turn next-step suggestions
 
-Suggestions are **optional and omitted by default**. When `next` is enabled and a concrete, high-value follow-up genuinely exists—either after completing a substantive task or after handing you a concrete offline/external action to complete and return with results (such as taking listed screenshots or gathering files)—the agent appends one ready-to-copy prompt at the end of the reply in plain text (or a `- ` bullet list with 2–3 short options when there is a real fork), grounded in what was just done, the handed-off action, remaining checks/risks, and any history or project rules already loaded in the session.
+When `next` is enabled and a concrete, high-value follow-up genuinely exists—either after completing a substantive task or after handing you a concrete offline/external action to complete and return with results (such as taking listed screenshots or gathering files)—the agent appends one ready-to-copy prompt at the end of the reply in plain text (or a `- ` bullet list with 2–3 short options when there is a real fork), grounded in what was just done, the handed-off action, remaining checks/risks, and any history or project rules already loaded in the session.
+
+Across long tool runs and repeated context compactions, the hooks keep the reminder active without re-running prompt rewriting: Antigravity refreshes `[PROMPT-OPTIMIZER NEXT-STEP]` once after each `CHECKPOINT` compaction and every 16 steps (`PROMPT_OPTIMIZER_NEXT_REFRESH_STEPS`), Claude Code restores it on `SessionStart` (`matcher: "compact"`), and all host hooks clear stale pending-confirmation state at compaction boundaries while scanning up to 64 MB of transcript tail in bounded chunks.
 
 It stays completely silent whenever a task is self-contained or done (never forcing filler suggestions), as well as during confirmation turns, open-ended clarifying questions whose answer cannot be predicted, login/payment gates, chit-chat, config replies, and trivial Q&A. Because the suggested prompt is already concrete, pasting it back executes immediately without triggering another rewrite.
 
@@ -106,7 +108,7 @@ mkdir -p ~/.agents/hooks
 cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
 ```
 
-Merge `hooks/claude-settings.example.json` into `~/.claude/settings.json`. Claude Code may ask you to approve the new hook; open `/hooks` to review it.
+Merge `hooks/claude-settings.example.json` into `~/.claude/settings.json` (registers both `UserPromptSubmit` and `SessionStart` with `matcher: "compact"` so post-compaction sessions keep next-step suggestions active). Claude Code may ask you to approve the new hook; open `/hooks` to review it.
 
 **Codex**
 
@@ -170,6 +172,7 @@ The skill and the rewrite work in any language. The hook skips rewrite routing l
 | `PROMPT_OPTIMIZER_SKILL_PATH` | path to `SKILL.md` that the hook tells the agent to read |
 | `PROMPT_OPTIMIZER_STATE_DIR` | state folder of the Claude Code and Codex hook |
 | `AGY_HOOK_STATE_DIR` | state folder of the Antigravity hook |
+| `PROMPT_OPTIMIZER_NEXT_REFRESH_STEPS` | step interval for refreshing `[PROMPT-OPTIMIZER NEXT-STEP]` during long Antigravity turns (default `16`) |
 
 ## Test
 

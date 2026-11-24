@@ -388,7 +388,15 @@ try {
   res = runHook({ conversationId: longConv, transcriptPath: longTx, initialNumSteps: 2, lastUserInput: '帮我把整个网站做完并上线' });
   assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '20a. First invocation routes');
   res = runHook({ conversationId: longConv, transcriptPath: longTx, initialNumSteps: 400, lastUserInput: '帮我把整个网站做完并上线' });
-  assert.deepStrictEqual(res, {}, '20b. Same turn after >1MB of steps must be deduped');
+  const longRefresh = getInjectedText(res);
+  assert(
+    !longRefresh.includes('[PROMPT-OPTIMIZER ROUTER]') &&
+    !longRefresh.includes('[PROMPT-OPTIMIZER PENDING-REPLY]') &&
+    longRefresh.includes('[PROMPT-OPTIMIZER NEXT-STEP]'),
+    '20b. Same turn after >1MB / many steps must never re-route, and refreshes NEXT-STEP reminder'
+  );
+  res = runHook({ conversationId: longConv, transcriptPath: longTx, initialNumSteps: 401, lastUserInput: '帮我把整个网站做完并上线' });
+  assert.deepStrictEqual(res, {}, '20c. Immediate next step after long-turn refresh stays silent');
 
   // 21. Previous turn had only tool calls (no text reply) + stale awaitingConfirm → not a pending reply
   const toolConv = 'conv-tool-only';
@@ -481,7 +489,8 @@ try {
     assert(
       bothText.includes('[PROMPT-OPTIMIZER ROUTER]') &&
       bothText.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
-      bothText.includes('Optional—omit by default') &&
+      bothText.includes('Before ending your final reply') &&
+      bothText.includes('ALWAYS append this block') &&
       bothText.includes('never suggest just for the sake of suggesting') &&
       bothText.includes('concrete offline/external action') &&
       bothText.includes('open-ended clarifying questions'),
@@ -894,7 +903,13 @@ try {
       initialNumSteps: 136,
       lastUserInput: `${repBody}\n${bgMeta1}`,
     });
-    assert.deepStrictEqual(res, {}, '30d.2 Background wakeup with same timestamp must dedupe');
+    const bgWakeText = getInjectedText(res);
+    assert(
+      !bgWakeText.includes('[PROMPT-OPTIMIZER ROUTER]') &&
+      !bgWakeText.includes('[PROMPT-OPTIMIZER PENDING-REPLY]') &&
+      bgWakeText.includes('[PROMPT-OPTIMIZER NEXT-STEP]'),
+      '30d.2 Background wakeup after 30 steps must dedupe ROUTER and only refresh NEXT-STEP'
+    );
     res = runHook({
       conversationId: bgConv,
       transcriptPath: bgTx,
@@ -1829,7 +1844,174 @@ try {
     assert(fs.existsSync(defFile), '35f.2 default-mode.txt must never be pruned');
   }
 
-  console.log('All 35 prompt-optimizer hook test groups passed.');
+  // 36. Compaction CHECKPOINT restores [PROMPT-OPTIMIZER NEXT-STEP] once per compaction (never re-injects ROUTER),
+  // and stays silent for silent turns or when next is off.
+  {
+    const cmpConv = 'conv-compaction-refresh';
+    const cmpTx = path.join(tmpState, 'compaction-refresh.jsonl');
+    const meta = '<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-24T17:00:00+08:00.\n</ADDITIONAL_METADATA>';
+    const uPrompt = '<USER_REQUEST>\n帮我重构导出流水线并补齐测试\n</USER_REQUEST>\n' + meta;
+    const rows = [
+      { step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: uPrompt },
+    ];
+    fs.writeFileSync(cmpTx, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: cmpConv, transcriptPath: cmpTx, initialNumSteps: 2, lastUserInput: uPrompt });
+    assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]') && getInjectedText(res).includes('[PROMPT-OPTIMIZER NEXT-STEP]'), '36a. Initial turn injects ROUTER + NEXT-STEP');
+
+    // Step 10 (< 16 steps, no compaction): silent
+    res = runHook({ conversationId: cmpConv, transcriptPath: cmpTx, initialNumSteps: 10, lastUserInput: uPrompt });
+    assert.deepStrictEqual(res, {}, '36b. Mid-turn before refresh threshold stays silent');
+
+    // Compaction #1 at step 12: restores NEXT-STEP immediately without ROUTER
+    rows.push({ step_index: 12, type: 'CHECKPOINT', content: '# Resuming from a compaction' });
+    fs.writeFileSync(cmpTx, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: cmpConv, transcriptPath: cmpTx, initialNumSteps: 13, lastUserInput: uPrompt });
+    const cmp1Text = getInjectedText(res);
+    assert(
+      cmp1Text.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
+      cmp1Text.includes('Context was compacted') &&
+      !cmp1Text.includes('[PROMPT-OPTIMIZER ROUTER]') &&
+      !cmp1Text.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'),
+      '36c. Compaction #1 restores NEXT-STEP only'
+    );
+
+    // Step 14 right after compaction #1: silent (no duplicate)
+    res = runHook({ conversationId: cmpConv, transcriptPath: cmpTx, initialNumSteps: 14, lastUserInput: uPrompt });
+    assert.deepStrictEqual(res, {}, '36d. Immediate step after compaction #1 stays silent');
+
+    // Compaction #2 at step 20: restores NEXT-STEP again
+    rows.push({ step_index: 20, type: 'CHECKPOINT', content: '# Resuming from a compaction' });
+    fs.writeFileSync(cmpTx, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: cmpConv, transcriptPath: cmpTx, initialNumSteps: 21, lastUserInput: uPrompt });
+    const cmp2Text = getInjectedText(res);
+    assert(cmp2Text.includes('[PROMPT-OPTIMIZER NEXT-STEP]') && !cmp2Text.includes('[PROMPT-OPTIMIZER ROUTER]'), '36e. Compaction #2 restores NEXT-STEP again');
+
+    // Next-off session never refreshes after compaction
+    const offCmpConv = 'conv-compaction-next-off';
+    runHook({ conversationId: offCmpConv, initialNumSteps: 1, lastUserInput: '/prompt-optimizer next off' });
+    res = runHook({ conversationId: offCmpConv, transcriptPath: cmpTx, initialNumSteps: 2, lastUserInput: uPrompt });
+    assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]') && !getInjectedText(res).includes('[PROMPT-OPTIMIZER NEXT-STEP]'), '36f.1 next-off turn has no NEXT-STEP');
+    res = runHook({ conversationId: offCmpConv, transcriptPath: cmpTx, initialNumSteps: 25, lastUserInput: uPrompt });
+    assert.deepStrictEqual(res, {}, '36f.2 next-off stays silent even after compaction and long steps');
+  }
+
+  // 37. Truncated USER_INPUT in compact transcript + subagent waiting response must NOT falsely re-inject ROUTER
+  {
+    const subConv = 'conv-truncated-subagent';
+    const subTx = path.join(tmpState, 'truncated-subagent.jsonl');
+    const longTask = '走内部自建方案：' + '详细部署要求与验收步骤'.repeat(30);
+    const meta = '<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-24T16:40:00+08:00.\n</ADDITIONAL_METADATA>';
+    const fullInput = `<USER_REQUEST>\n${longTask}\n</USER_REQUEST>\n${meta}`;
+    const truncRows = [
+      { step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: `<USER_REQUEST>\n${longTask.slice(0, 120)}`, truncated_fields: ['content'] },
+      { step_index: 4, type: 'PLANNER_RESPONSE', content: '已创建独立只读代码审查子任务，等待审查结论。' },
+      { step_index: 5, type: 'SYSTEM_MESSAGE', source: 'SYSTEM', content: '[Message] sender=subagent-1 content=done' },
+    ];
+    fs.writeFileSync(subTx, truncRows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: subConv, transcriptPath: subTx, initialNumSteps: 2, lastUserInput: fullInput });
+    assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '37a. Initial turn routes');
+    res = runHook({ conversationId: subConv, transcriptPath: subTx, initialNumSteps: 6, lastUserInput: fullInput });
+    assert.deepStrictEqual(res, {}, '37b. Subagent wakeup after truncated USER_INPUT must not re-inject ROUTER');
+
+    // 37c. Truncated USER_INPUT WITHOUT <ADDITIONAL_METADATA> must still match sameUserMessage for dedupe
+    const subNoMetaConv = 'conv-truncated-nometa';
+    const subNoMetaTx = path.join(tmpState, 'truncated-nometa.jsonl');
+    const noMetaInput = `<USER_REQUEST>\n${longTask}\n</USER_REQUEST>`;
+    fs.writeFileSync(subNoMetaTx, [
+      { step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: `<USER_REQUEST>\n${longTask.slice(0, 120)}`, truncated_fields: ['content'] },
+      { step_index: 2, type: 'GENERIC', status: 'DONE', content: 'working' },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: subNoMetaConv, transcriptPath: subNoMetaTx, initialNumSteps: 2, lastUserInput: noMetaInput });
+    assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '37c.1 Initial turn without outerMeta routes');
+    res = runHook({ conversationId: subNoMetaConv, transcriptPath: subNoMetaTx, initialNumSteps: 5, lastUserInput: noMetaInput });
+    assert.deepStrictEqual(res, {}, '37c.2 Truncated USER_INPUT without outerMeta still matches step:1 and dedupes');
+
+    // 37d. Long truncated user reply to an optimized prompt must trigger PENDING-REPLY (not ROUTER)
+    const truncReplyTx = path.join(tmpState, 'truncated-pending-reply.jsonl');
+    const longReply = '同意，另外请重点核对' + '所有缓存失效和重试边界条件'.repeat(20);
+    fs.writeFileSync(truncReplyTx, [
+      { step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n优化缓存逻辑\n</USER_REQUEST>' },
+      { step_index: 2, type: 'PLANNER_RESPONSE', content: '### 优化后的提示词\n\n> 排查并优化缓存失效与重试机制。\n\n确认使用这条提示词吗？（同意 / 修改 / 按原话）' },
+      { step_index: 3, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: `<USER_REQUEST>\n${longReply.slice(0, 100)}`, truncated_fields: ['content'] },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: 'conv-trunc-pending', transcriptPath: truncReplyTx, initialNumSteps: 4, lastUserInput: `<USER_REQUEST>\n${longReply}\n</USER_REQUEST>` });
+    const truncPendingText = getInjectedText(res);
+    assert(
+      truncPendingText.startsWith('[PROMPT-OPTIMIZER PENDING-REPLY]'),
+      '37d. Long truncated reply to optimizer prompt must resolve to PENDING-REPLY'
+    );
+
+    // 37e. T3 short user body truncated inside <runtime_info> still matches exactly, while short (<20 char) unclosed prefix does NOT falsely collide
+    const t3TruncTx = path.join(tmpState, 't3-truncated-runtime.jsonl');
+    fs.writeFileSync(t3TruncTx, [
+      { step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n<t3_code_instructions>rules</t3_code_instructions>\n<user_request>\n优化缓存\n</user_request><runtime_info>T3...', truncated_fields: ['content'] },
+      { step_index: 2, type: 'PLANNER_RESPONSE', content: '### 优化后的提示词\n\n> 优化缓存失效策略。\n\n确认使用这条提示词吗？' },
+      { step_index: 3, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n<t3_code_instructions>rules</t3_code_instructions>\n<user_request>\n同意\n</user_request><runtime_info>T3...', truncated_fields: ['content'] },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: 'conv-t3-trunc', transcriptPath: t3TruncTx, initialNumSteps: 4, lastUserInput: '<USER_REQUEST>\n<t3_code_instructions>rules</t3_code_instructions>\n<user_request>\n同意\n</user_request><runtime_info>T3 Code</runtime_info>\n</USER_REQUEST>' });
+    assert(getInjectedText(res).startsWith('[PROMPT-OPTIMIZER PENDING-REPLY]'), '37e.1 T3 short body truncated inside <runtime_info> resolves to PENDING-REPLY');
+
+    // Unfinished turn with truncated <20-char prefix ("帮我"): latestTurnFinished is false,
+    // so inspectTranscript MUST invoke sameUserMessage(); a different message starting with "帮我"
+    // must NOT falsely match as currentFlushed and trigger PENDING-REPLY.
+    const shortPrefixTx = path.join(tmpState, 'short-prefix-trunc.jsonl');
+    fs.writeFileSync(shortPrefixTx, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', content: '### 优化后的提示词\n\n> 旧草稿。\n\n确认？' },
+      { step_index: 2, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n帮我', truncated_fields: ['content'] },
+      { step_index: 3, type: 'GENERIC', status: 'DONE', content: 'tool running' },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: 'conv-short-prefix', transcriptPath: shortPrefixTx, initialNumSteps: 4, lastUserInput: '<USER_REQUEST>\n帮我把登录页重做一下\n</USER_REQUEST>' });
+    const shortPrefixText = getInjectedText(res);
+    assert(
+      shortPrefixText.includes('[PROMPT-OPTIMIZER ROUTER]') && !shortPrefixText.startsWith('[PROMPT-OPTIMIZER PENDING-REPLY]'),
+      '37e.2 Short <20 char unclosed truncated prefix must not collide as sameUserMessage'
+    );
+  }
+
+  // 38. CHECKPOINT after an optimized prompt clears pending confirmation on the next user turn
+  {
+    const ckOptTx = path.join(tmpState, 'ckpt-after-opt.jsonl');
+    fs.writeFileSync(ckOptTx, [
+      { step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '帮我优化搜索' },
+      { step_index: 2, type: 'PLANNER_RESPONSE', content: '### 优化后的提示词\n\n> 优化站内搜索排序与性能。\n\n确认使用这条提示词吗？（同意 / 修改 / 按原话）' },
+      { step_index: 3, type: 'CHECKPOINT', content: '# Resuming from a compaction' },
+      { step_index: 4, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '顺便把登录页也改下' },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    res = runHook({ conversationId: 'conv-ckpt-opt', transcriptPath: ckOptTx, initialNumSteps: 5, lastUserInput: '顺便把登录页也改下' });
+    const txt = getInjectedText(res);
+    assert(txt.includes('[PROMPT-OPTIMIZER ROUTER]') && !txt.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'), '38. Compaction boundary clears prior optimizer-prompt confirmation');
+  }
+
+  // 39. >16MB transcript handoff: (a) tail optimizer reply after >16MB tool output is NOT skipped,
+  // and (b) flushed Turn 2 with identical text after >16MB tool output preserves its own stepKey (not Turn 1's).
+  {
+    const big17Tx = path.join(tmpState, 'big-17mb-handoff.jsonl');
+    const fdBig = fs.openSync(big17Tx, 'w');
+    fs.writeSync(fdBig, JSON.stringify({ step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n优化首页\n</USER_REQUEST>' }) + '\n');
+    const padRow = JSON.stringify({ step_index: 2, type: 'GENERIC', content: 'm'.repeat(32000) }) + '\n';
+    for (let i = 0; i < 540; i++) fs.writeSync(fdBig, padRow); // ~17.3 MB
+    fs.writeSync(fdBig, JSON.stringify({ step_index: 545, type: 'PLANNER_RESPONSE', content: '### 优化后的提示词\n\n> 优化首页首屏性能与排版。\n\n确认使用这条提示词吗？' }) + '\n');
+    fs.closeSync(fdBig);
+    res = runHook({ conversationId: 'conv-big17-a', transcriptPath: big17Tx, initialNumSteps: 546, lastUserInput: '<USER_REQUEST>\n同意\n</USER_REQUEST>' });
+    assert(getInjectedText(res).startsWith('[PROMPT-OPTIMIZER PENDING-REPLY]'), '39a. Tail optimizer reply after >16MB tool logs must resolve to PENDING-REPLY');
+    fs.unlinkSync(big17Tx);
+
+    const big17bTx = path.join(tmpState, 'big-17mb-stepkey.jsonl');
+    const fdBigB = fs.openSync(big17bTx, 'w');
+    fs.writeSync(fdBigB, JSON.stringify({ step_index: 1, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n优化首页\n</USER_REQUEST>' }) + '\n');
+    fs.writeSync(fdBigB, JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', content: '首页第一轮已完成。' }) + '\n');
+    for (let i = 0; i < 540; i++) fs.writeSync(fdBigB, padRow); // ~17.3 MB of non-text rows
+    fs.writeSync(fdBigB, JSON.stringify({ step_index: 550, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '<USER_REQUEST>\n优化首页\n</USER_REQUEST>' }) + '\n');
+    fs.closeSync(fdBigB);
+    res = runHook({ conversationId: 'conv-big17-b', transcriptPath: big17bTx, initialNumSteps: 551, lastUserInput: '<USER_REQUEST>\n优化首页\n</USER_REQUEST>' });
+    assert(getInjectedText(res).includes('[PROMPT-OPTIMIZER ROUTER]'), '39b.1 Turn 2 flushed at step:550 after >16MB routes cleanly');
+    const turnFileB = path.join(tmpState, 'prompt-optimizer', 'turn-' + crypto.createHash('sha256').update('conv-big17-b').digest('hex').slice(0, 16) + '.json');
+    const savedB = JSON.parse(fs.readFileSync(turnFileB, 'utf8'));
+    assert.strictEqual(savedB.stepNum, 550, '39b.2 Saved stepNum must preserve Turn 2 step 550 instead of rebinding to Turn 1 step 1');
+    fs.unlinkSync(big17bTx);
+  }
+
+  console.log('All 39 prompt-optimizer hook test groups passed.');
 } finally {
   fs.rmSync(tmpState, { recursive: true, force: true });
 }

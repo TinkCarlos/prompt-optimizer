@@ -29,6 +29,9 @@ const OPTIMIZER_HEADING_RE = /^#{2,4}\s*(?:优化后的提问|优化后的提示
 const SKILL_META_RE = /(?:(?:这个|该|当前|本|此)\s*(?:skill|技能|hook|钩子|扩展|插件|脚本|提示词优化器)|SKILL\.md|\b(?:this|the)\s+(?:skill|hook|extension|plugin|script|repo|readme|prompt-optimizer)\b|^(?:(?:还有|有|存在|哪里有)(?:什么|啥)?问题|为什么(?:没触发|不触发|会触发|没生效|不生效|老是|总是)|(?:怎么|如何)(?:用|安装|配置|工作|触发|关闭|开启|修复|优化)|(?:审查|检查|修复|优化|改进|重构|调试)(?:一下)?(?:这个|该|当前|本)?\s*(?:skill|技能|hook|钩子|扩展|插件|脚本)|what(?:'s| is) wrong|any (?:issues?|bugs?|problems?)|how does (?:this|it) work|why (?:didn't|did|doesn't|isn't) (?:this|it)|(?:review|audit|inspect|debug|fix|edit|update|refactor|improve)\s+(?:this|the|your|its)?\s*(?:skill|hook|extension|plugin|script|prompt-optimizer)\b))/i;
 const STATE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const NEXT_STEP_REFRESH_STEPS = Math.max(1, Number.parseInt(process.env.PROMPT_OPTIMIZER_NEXT_REFRESH_STEPS || '16', 10) || 16);
+const MAX_TRANSCRIPT_SCAN_BYTES = 64 * 1024 * 1024;
+const TRANSCRIPT_CHUNK_BYTES = 4 * 1024 * 1024;
 
 function isControlCommand(text) {
   return /^[/@$][^\s]+$/.test(text) || CONTROL_CMD_RE.test(text);
@@ -265,47 +268,171 @@ function isExplicitUserInput(d) {
   return Boolean(d && d.type === 'USER_INPUT' && (d.source === 'USER_EXPLICIT' || d.source == null));
 }
 
+function stripTruncatedUserPrefix(text) {
+  let s = String(text || '').trim();
+  s = s.replace(/^<USER_REQUEST>\s*/i, '');
+  const t3Lead = /^(?:<(?:t3_code_instructions|runtime_info)\b[^>]*>[\s\S]*?<\/(?:t3_code_instructions|runtime_info)>\s*)*<user_request>\s*/i;
+  if (t3Lead.test(s)) {
+    s = s.replace(t3Lead, '');
+    const closeIdx = s.search(/<\/user_request>/i);
+    if (closeIdx >= 0) {
+      return { text: s.slice(0, closeIdx).trim(), exact: true };
+    }
+  }
+  return { text: s.trim(), exact: false };
+}
+
 function sameUserMessage(row, curText) {
   if (!row || !curText) return false;
   const rowText = extractUserText(row.content);
   if (!rowText) return false;
   if (rowText === curText) return true;
   if (Array.isArray(row.truncated_fields) && row.truncated_fields.includes('content')) {
-    const prefix = rowText.slice(0, 80);
+    const stripped = stripTruncatedUserPrefix(rowText);
+    if (stripped.exact) return stripped.text === curText;
+    const prefix = stripped.text.slice(0, 80);
     return prefix.length >= 20 && curText.startsWith(prefix);
   }
   return false;
 }
 
+function readTranscriptSliceRows(fd, start, end) {
+  const len = end - start;
+  if (len <= 0) return { rows: [], firstCompleteOffset: start };
+  const buf = Buffer.alloc(len);
+  fs.readSync(fd, buf, 0, len, start);
+  let firstCompleteOffset = start;
+  let contentBuf = buf;
+  if (start > 0) {
+    const nlIdx = buf.indexOf(0x0a);
+    if (nlIdx === -1) {
+      return { rows: [], firstCompleteOffset: end };
+    }
+    firstCompleteOffset = start + nlIdx + 1;
+    contentBuf = buf.subarray(nlIdx + 1);
+  }
+  const lines = contentBuf.toString('utf8').split(/\r?\n/);
+  const rows = [];
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      const d = JSON.parse(line);
+      if (d && typeof d === 'object') rows.push(d);
+    } catch (_) {}
+  }
+  return { rows, firstCompleteOffset };
+}
+
+function updateTranscriptSignals(rows, result, minStep) {
+  for (let i = 0; i < rows.length; i++) {
+    const d = rows[i];
+    const si = d.step_index != null ? Number(d.step_index) : null;
+    if (si != null && (result.latestTailStep == null || si > result.latestTailStep)) {
+      result.latestTailStep = si;
+    }
+    if (minStep != null && si != null && si < minStep) continue;
+    if (d.type === 'CHECKPOINT') {
+      const ckStep = si != null ? si : (result.latestTailStep != null ? result.latestTailStep : 0);
+      if (result.latestCheckpointStep == null || ckStep > result.latestCheckpointStep) {
+        result.latestCheckpointStep = ckStep;
+      }
+    } else if (d.type === 'SYSTEM_MESSAGE' && String(d.content || '').includes('[PROMPT-OPTIMIZER NEXT-STEP]')) {
+      const nsStep = si != null ? si : (result.latestTailStep != null ? result.latestTailStep : 0);
+      if (result.latestNextStepInjectStep == null || nsStep > result.latestNextStepInjectStep) {
+        result.latestNextStepInjectStep = nsStep;
+      }
+    }
+  }
+}
+
+function inspectTailFinishAndTruth(rows, fromIdx) {
+  const pendingTaskIds = new Set();
+  let hasAnonRunningAfterSys = false;
+  for (let i = fromIdx; i < rows.length; i++) {
+    const r = rows[i];
+    const c = String(r.content || '');
+    if (r.type === 'SYSTEM_MESSAGE' && (r.source === 'SYSTEM' || r.source == null)) {
+      const hasMessageEnvelope = /(?:^|\n)\[Message\](?:\s|$)/i.test(c);
+      const senderMatch = hasMessageEnvelope
+        ? c.match(/(?:^|\n)\[Message\](?:(?!\bcontent=)[^\n])*?\bsender=([^\s]+)/i)
+        : null;
+      const taskMatch = hasMessageEnvelope
+        ? null
+        : c.match(/(?:^|\n)(?:Background notification:\s*)?Task id "([^"]+)"\s+finished\b/i);
+      const completedId = (senderMatch && senderMatch[1]) || (taskMatch && taskMatch[1]) || null;
+      if (completedId) pendingTaskIds.delete(completedId);
+      else if (!hasMessageEnvelope) hasAnonRunningAfterSys = false;
+    } else if (r.status === 'RUNNING') {
+      const tm = c.match(/task id:\s*([^\s"'`.,;]+)/i);
+      if (tm) pendingTaskIds.add(tm[1]);
+      else hasAnonRunningAfterSys = true;
+    }
+  }
+  const hasUnresolvedRunning = pendingTaskIds.size > 0 || hasAnonRunningAfterSys;
+  let finished = false;
+  if (!hasUnresolvedRunning) {
+    for (let i = rows.length - 1; i >= fromIdx; i--) {
+      const d = rows[i];
+      if (d.type === 'PLANNER_RESPONSE' && !String(d.content || '').trim() && !(Array.isArray(d.tool_calls) && d.tool_calls.length > 0)) {
+        continue;
+      }
+      finished = Boolean(
+        d.type === 'PLANNER_RESPONSE' &&
+        String(d.content || '').trim() &&
+        !(Array.isArray(d.tool_calls) && d.tool_calls.length > 0)
+      );
+      break;
+    }
+  }
+  let truth = null;
+  for (let i = rows.length - 1; i >= fromIdx; i--) {
+    const d = rows[i];
+    if (d.type === 'CHECKPOINT') {
+      truth = { kind: 'checkpoint', isOptimizerPrompt: false };
+      break;
+    }
+    if (d.type === 'PLANNER_RESPONSE') {
+      const content = String(d.content || '').trim();
+      if (!content) continue;
+      truth = { kind: 'reply', isOptimizerPrompt: looksLikeOptimizedPrompt(content) };
+      break;
+    }
+  }
+  return { finished, truth };
+}
+
 function inspectTranscript(payload, curBlocks, digest) {
-  const result = { stepKey: null, stepNum: null, hasTranscriptTruth: false, lastReplyWasOptimizerPrompt: false };
+  const result = {
+    stepKey: null,
+    stepNum: null,
+    hasTranscriptTruth: false,
+    lastReplyWasOptimizerPrompt: false,
+    latestCheckpointStep: null,
+    latestNextStepInjectStep: null,
+    latestTailStep: null,
+  };
   const tpath = String(payload.transcriptPath || '');
   if (!tpath) return result;
   const blocks = curBlocks || parseTopLevelBlocks(payload.lastUserInput);
   const curText = blocks.text;
   const curOuterMeta = blocks.outerMeta;
   const curDigest = digest != null ? digest : digestText(curText);
+  let fd = null;
   try {
-    // Long agent turns can exceed any fixed tail window, so widen until the latest
-    // user input and the reply before it are both visible.
+    // Long or repeatedly compacted turns can exceed any fixed tail window, so widen
+    // and then step backwards in bounded chunks until the latest user input and prior reply are visible.
     const size = fs.statSync(tpath).size;
+    fd = fs.openSync(tpath, 'r');
+    let tailFirstComplete = size;
+    let lastTailRows = [];
+    let lastTailUserIdx = -1;
+    let lastTailCurrentFlushed = false;
     for (const maxBytes of [256 * 1024, 1024 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024]) {
       const start = Math.max(0, size - maxBytes);
-      const fd = fs.openSync(tpath, 'r');
-      const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      fs.closeSync(fd);
-      const lines = buf.toString('utf8').split(/\r?\n/);
-      if (start > 0 && lines.length) lines.shift();
-
-      const rows = [];
-      for (const line of lines) {
-        if (!line) continue;
-        try {
-          const d = JSON.parse(line);
-          if (d && typeof d === 'object') rows.push(d);
-        } catch (_) {}
-      }
+      const slice = readTranscriptSliceRows(fd, start, size);
+      const rows = slice.rows;
+      tailFirstComplete = slice.firstCompleteOffset;
+      lastTailRows = rows;
 
       let latestUserIdx = -1;
       for (let i = rows.length - 1; i >= 0; i--) {
@@ -314,47 +441,14 @@ function inspectTranscript(payload, curBlocks, digest) {
           break;
         }
       }
+      lastTailUserIdx = latestUserIdx;
 
-      let latestTurnFinished = false;
-      if (latestUserIdx >= 0) {
-        const pendingTaskIds = new Set();
-        let hasAnonRunningAfterSys = false;
-        for (let i = latestUserIdx + 1; i < rows.length; i++) {
-          const r = rows[i];
-          const c = String(r.content || '');
-          if (r.type === 'SYSTEM_MESSAGE' && (r.source === 'SYSTEM' || r.source == null)) {
-            const hasMessageEnvelope = /(?:^|\n)\[Message\](?:\s|$)/i.test(c);
-            const senderMatch = hasMessageEnvelope
-              ? c.match(/(?:^|\n)\[Message\](?:(?!\bcontent=)[^\n])*?\bsender=([^\s]+)/i)
-              : null;
-            const taskMatch = hasMessageEnvelope
-              ? null
-              : c.match(/(?:^|\n)(?:Background notification:\s*)?Task id "([^"]+)"\s+finished\b/i);
-            const completedId = (senderMatch && senderMatch[1]) || (taskMatch && taskMatch[1]) || null;
-            if (completedId) pendingTaskIds.delete(completedId);
-            else if (!hasMessageEnvelope) hasAnonRunningAfterSys = false;
-          } else if (r.status === 'RUNNING') {
-            const tm = c.match(/task id:\s*([^\s"'`.,;]+)/i);
-            if (tm) pendingTaskIds.add(tm[1]);
-            else hasAnonRunningAfterSys = true;
-          }
-        }
-        const hasUnresolvedRunning = pendingTaskIds.size > 0 || hasAnonRunningAfterSys;
-        if (!hasUnresolvedRunning) {
-          for (let i = rows.length - 1; i > latestUserIdx; i--) {
-            const d = rows[i];
-            if (d.type === 'PLANNER_RESPONSE' && !String(d.content || '').trim() && !(Array.isArray(d.tool_calls) && d.tool_calls.length > 0)) {
-              continue;
-            }
-            latestTurnFinished = Boolean(
-              d.type === 'PLANNER_RESPONSE' &&
-              String(d.content || '').trim() &&
-              !(Array.isArray(d.tool_calls) && d.tool_calls.length > 0)
-            );
-            break;
-          }
-        }
-      }
+      const turnMinStep = latestUserIdx >= 0 && rows[latestUserIdx].step_index != null
+        ? Number(rows[latestUserIdx].step_index)
+        : null;
+      updateTranscriptSignals(rows, result, turnMinStep);
+
+      const latestTurnFinished = latestUserIdx >= 0 ? inspectTailFinishAndTruth(rows, latestUserIdx + 1).finished : false;
 
       const rowOuterMeta = latestUserIdx >= 0 ? parseTopLevelBlocks(rows[latestUserIdx].content).outerMeta : '';
       const sameOuterMeta = Boolean(curOuterMeta && rowOuterMeta && curOuterMeta === rowOuterMeta);
@@ -362,6 +456,7 @@ function inspectTranscript(payload, curBlocks, digest) {
       // latestUserIdx still points to the previous turn; scan from the tail for its reply.
       // shortcut: a cancelled turn with no text PLANNER_RESPONSE is indistinguishable from an active tool loop before the next USER_INPUT flushes; requires host turnId to disambiguate
       const currentFlushed = latestUserIdx >= 0 && (!latestTurnFinished || sameOuterMeta) && (!curText || sameUserMessage(rows[latestUserIdx], curText));
+      lastTailCurrentFlushed = currentFlushed;
       const scanFrom = currentFlushed ? latestUserIdx - 1 : rows.length - 1;
 
       let decided = false;
@@ -369,7 +464,7 @@ function inspectTranscript(payload, curBlocks, digest) {
       if (latestUserIdx >= 0 || start === 0) {
         for (let i = scanFrom; i >= 0; i--) {
           const d = rows[i];
-          if (isExplicitUserInput(d)) {
+          if (d.type === 'CHECKPOINT' || isExplicitUserInput(d)) {
             decided = true;
             break;
           }
@@ -395,18 +490,114 @@ function inspectTranscript(payload, curBlocks, digest) {
       }
       if (start === 0) break;
     }
-  } catch (_) {}
+
+    // For >16MB multi-compaction transcripts where the tail window had only tool/checkpoint rows,
+    // preserve tail user/reply signals and step backwards in bounded 4MB chunks up to 64MB,
+    // overlapping the single line straddling each boundary.
+    if (!result.hasTranscriptTruth && size > 16 * 1024 * 1024) {
+      if (lastTailUserIdx >= 0 && lastTailCurrentFlushed && lastTailRows[lastTailUserIdx].step_index != null) {
+        result.stepNum = Number(lastTailRows[lastTailUserIdx].step_index);
+        result.stepKey = 'step:' + result.stepNum + ':' + curDigest;
+      }
+      const tailSummary = lastTailUserIdx === -1 ? inspectTailFinishAndTruth(lastTailRows, 0) : { finished: false, truth: null };
+      if (tailSummary.truth && tailSummary.truth.kind === 'checkpoint') {
+        result.hasTranscriptTruth = true;
+        result.lastReplyWasOptimizerPrompt = false;
+      }
+
+      const floor = Math.max(0, size - MAX_TRANSCRIPT_SCAN_BYTES);
+      let cursor = size - 16 * 1024 * 1024;
+      let chunkEnd = tailFirstComplete;
+      let sawLatestUser = lastTailUserIdx >= 0;
+      while (cursor > floor) {
+        const nextStart = Math.max(floor, cursor - TRANSCRIPT_CHUNK_BYTES);
+        const slice = readTranscriptSliceRows(fd, nextStart, chunkEnd);
+        const rows = slice.rows;
+        updateTranscriptSignals(rows, result, null);
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const d = rows[i];
+          if (d.type === 'CHECKPOINT') {
+            if (!result.hasTranscriptTruth && (sawLatestUser || !tailSummary.truth)) {
+              result.hasTranscriptTruth = true;
+              result.lastReplyWasOptimizerPrompt = false;
+            }
+            if (result.hasTranscriptTruth && (result.stepKey || sawLatestUser)) return result;
+            continue;
+          }
+          if (isExplicitUserInput(d)) {
+            if (!sawLatestUser) {
+              sawLatestUser = true;
+              const rowMeta = parseTopLevelBlocks(d.content).outerMeta;
+              const sameMeta = Boolean(curOuterMeta && rowMeta && curOuterMeta === rowMeta);
+              const isCur = (!tailSummary.finished || sameMeta) && (!curText || sameUserMessage(d, curText));
+              if (isCur) {
+                if (d.step_index != null) {
+                  result.stepNum = Number(d.step_index);
+                  result.stepKey = 'step:' + result.stepNum + ':' + curDigest;
+                }
+                if (result.hasTranscriptTruth) return result;
+                continue;
+              }
+              if (tailSummary.truth) {
+                result.hasTranscriptTruth = true;
+                result.lastReplyWasOptimizerPrompt = tailSummary.truth.isOptimizerPrompt;
+                return result;
+              }
+              if (!result.hasTranscriptTruth) {
+                result.hasTranscriptTruth = true;
+                result.lastReplyWasOptimizerPrompt = false;
+              }
+              return result;
+            }
+            // Already passed the current turn's USER_INPUT; any earlier USER_INPUT ends the search cleanly.
+            if (!result.hasTranscriptTruth) {
+              result.hasTranscriptTruth = true;
+              result.lastReplyWasOptimizerPrompt = false;
+            }
+            return result;
+          }
+          if (d.type === 'PLANNER_RESPONSE') {
+            const content = String(d.content || '').trim();
+            if (!content) continue;
+            if (!sawLatestUser && tailSummary.truth) continue;
+            if (!result.hasTranscriptTruth) {
+              result.hasTranscriptTruth = true;
+              result.lastReplyWasOptimizerPrompt = looksLikeOptimizedPrompt(content);
+            }
+            if (sawLatestUser) return result;
+          }
+        }
+        chunkEnd = slice.firstCompleteOffset;
+        cursor = nextStart;
+      }
+      if (!result.hasTranscriptTruth) {
+        if (!sawLatestUser && tailSummary.truth) {
+          result.hasTranscriptTruth = true;
+          result.lastReplyWasOptimizerPrompt = tailSummary.truth.isOptimizerPrompt;
+        } else if (floor === 0) {
+          result.hasTranscriptTruth = true;
+          result.lastReplyWasOptimizerPrompt = false;
+        }
+      }
+    }
+  } catch (_) {
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
   return result;
 }
 
-function turnKeys(payload, tx, precomputedDigest) {
+function turnKeys(payload, tx, precomputedDigest, outerMeta) {
   const digest = precomputedDigest != null ? precomputedDigest : digestText(extractUserText(payload.lastUserInput));
+  const outerMetaDigest = outerMeta ? digestText(outerMeta) : null;
   const initialNumSteps = payload.initialNumSteps != null ? Number(payload.initialNumSteps) : null;
   const initKey = initialNumSteps != null ? 'init:' + String(initialNumSteps) + ':' + digest : null;
   const stepKey = tx && tx.stepKey ? tx.stepKey : null;
   const stepNum = tx && tx.stepNum != null ? tx.stepNum : null;
   const fallbackKey = stepKey || initKey || 'raw:' + digest;
-  return { stepKey, stepNum, initKey, digest, initialNumSteps, fallbackKey };
+  return { stepKey, stepNum, initKey, digest, outerMetaDigest, initialNumSteps, fallbackKey };
 }
 
 function atomicWrite(file, content) {
@@ -513,36 +704,85 @@ function withTurnLock(convId, fn, onTimeout) {
   }
 }
 
-function dedupeTurn(convId, payload, tx, digest) {
-  const cur = turnKeys(payload, tx, digest);
+function currentStepOf(cur, tx) {
+  if (cur.initialNumSteps != null) return cur.initialNumSteps;
+  if (tx && tx.latestTailStep != null) return tx.latestTailStep;
+  return null;
+}
+
+function claimTurnOrRefresh(convId, payload, tx, digest, outerMeta, nextEnabled, nextEligible) {
+  const cur = turnKeys(payload, tx, digest, outerMeta);
+  const curStep = currentStepOf(cur, tx);
+  const curCkpt = tx && tx.latestCheckpointStep != null ? tx.latestCheckpointStep : -1;
   return withTurnLock(convId, () => {
     const file = path.join(STATE_DIR, 'turn-' + hashId(convId) + '.json');
+    let prev = null;
     try {
-      const prev = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (prev && typeof prev === 'object') {
-        if ((cur.initKey && prev.initKey === cur.initKey) ||
-            (cur.stepKey && prev.stepKey === cur.stepKey) ||
-            prev.fallbackKey === cur.fallbackKey) {
-          return false;
-        }
-        // First invocation ran before the new USER_INPUT flushed to transcript; upgrade key on the second invocation.
-        if (!prev.stepKey && cur.stepKey && prev.digest === cur.digest &&
-            cur.stepNum != null && prev.initialNumSteps != null && cur.stepNum <= prev.initialNumSteps) {
-          try { atomicWrite(file, JSON.stringify(cur)); } catch (_) {}
-          return false;
-        }
-        // Second invocation saw flushed transcript and won the lock before an earlier pre-flush invocation entered dedupeTurn.
-        if (prev.stepKey && !cur.stepKey && prev.digest === cur.digest &&
-            cur.initialNumSteps != null && prev.initialNumSteps != null && cur.initialNumSteps <= prev.initialNumSteps) {
-          return false;
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (parsed && typeof parsed === 'object') prev = parsed;
+    } catch (_) {}
+
+    let isSameTurn = false;
+    let upgradedState = prev;
+    if (prev) {
+      const sameOuterMeta = Boolean(
+        cur.outerMetaDigest &&
+        prev.outerMetaDigest === cur.outerMetaDigest &&
+        prev.digest === cur.digest &&
+        (!cur.stepKey || !prev.stepKey || cur.stepKey === prev.stepKey)
+      );
+      if ((cur.initKey && prev.initKey === cur.initKey) ||
+          (cur.stepKey && prev.stepKey === cur.stepKey) ||
+          sameOuterMeta ||
+          prev.fallbackKey === cur.fallbackKey) {
+        isSameTurn = true;
+      } else if (!prev.stepKey && cur.stepKey && prev.digest === cur.digest &&
+          cur.stepNum != null && prev.initialNumSteps != null && cur.stepNum <= prev.initialNumSteps) {
+        isSameTurn = true;
+        upgradedState = { ...prev, ...cur };
+      } else if (prev.stepKey && !cur.stepKey && prev.digest === cur.digest &&
+          cur.initialNumSteps != null && prev.initialNumSteps != null && cur.initialNumSteps <= prev.initialNumSteps) {
+        isSameTurn = true;
+      }
+    }
+
+    if (isSameTurn) {
+      let stateToWrite = upgradedState !== prev ? upgradedState : null;
+      if (nextEnabled && prev && prev.nextEligible) {
+        const lastNext = Math.max(
+          prev.lastNextStepAt != null ? Number(prev.lastNextStepAt) : -1,
+          tx && tx.latestNextStepInjectStep != null ? Number(tx.latestNextStepInjectStep) : -1
+        );
+        const lastCkpt = prev.lastRefreshedCheckpoint != null ? Number(prev.lastRefreshedCheckpoint) : -1;
+        const hasNewCompaction = curCkpt >= 0 && curCkpt > lastNext && curCkpt > lastCkpt;
+        const longTurnDue = curStep != null && lastNext >= 0 && (curStep - lastNext) >= NEXT_STEP_REFRESH_STEPS;
+        if (hasNewCompaction || longTurnDue) {
+          const nextState = {
+            ...(stateToWrite || prev),
+            lastNextStepAt: curStep != null ? curStep : (hasNewCompaction ? curCkpt : lastNext + NEXT_STEP_REFRESH_STEPS),
+            lastRefreshedCheckpoint: Math.max(lastCkpt, curCkpt),
+          };
+          try { atomicWrite(file, JSON.stringify(nextState)); } catch (_) {}
+          return { action: 'refresh-next', afterCompaction: hasNewCompaction };
         }
       }
-    } catch (_) {}
+      if (stateToWrite) {
+        try { atomicWrite(file, JSON.stringify(stateToWrite)); } catch (_) {}
+      }
+      return { action: 'skip' };
+    }
+
+    const fresh = {
+      ...cur,
+      nextEligible: Boolean(nextEligible),
+      lastNextStepAt: nextEligible && nextEnabled ? (curStep != null ? curStep : 0) : -1,
+      lastRefreshedCheckpoint: curCkpt,
+    };
     try {
-      atomicWrite(file, JSON.stringify(cur));
+      atomicWrite(file, JSON.stringify(fresh));
     } catch (_) {}
-    return true;
-  }, false);
+    return { action: 'new' };
+  }, { action: 'skip' });
 }
 
 function defaultModeFile() {
@@ -646,10 +886,17 @@ function gateInstruction(isExplicit) {
 function nextStepInstruction() {
   return [
     '[PROMPT-OPTIMIZER NEXT-STEP]',
-    'Optional—omit by default (stay silent in most turns). Only append this block when an obvious, high-value next prompt grounded in context and loaded session memory/rules genuinely exists: (a) after substantive work with concrete remaining verification, risks, or next steps, or (b) after handing the user a concrete offline/external action to complete and return with results (draft the exact return prompt naming items, counts, and next action).',
-    '- Omit completely when the task is done/self-contained, when nothing clearly useful stands out (never suggest just for the sake of suggesting), during optimized-prompt confirmation turns, when asking open-ended clarifying questions, when blocked on login/payment, or for chit-chat/config/trivial Q&A.',
-    "- When included, append after `---` and one short bold localized label: 1 concrete 1–2 sentence prompt in the user's language and voice (or 2–3 `- ` bullets only at a real fork). Plain text only—no `###`, `>`, or code fences.",
+    'Before ending your final reply (even after long tool runs or context compaction), check whether an obvious, high-value next prompt grounded in context and loaded session memory/rules exists: (a) after substantive work with concrete remaining verification, risks, or next steps, or (b) after handing the user a concrete offline/external action to complete and return with results (draft the exact return prompt naming items, counts, and next action). When it exists, ALWAYS append this block at the very end—do not bury it in prose.',
+    '- Omit completely (stay silent, never suggest just for the sake of suggesting) when the task is done/self-contained, during optimized-prompt confirmation turns, when asking open-ended clarifying questions, when blocked on login/payment, or for chit-chat/config/trivial Q&A.',
+    "- Format: `---` and one short bold localized label, then 1 concrete 1–2 sentence prompt in the user's language and voice (or 2–3 `- ` bullets only at a real fork). Plain text only—no `###`, `>`, or code fences.",
   ].join('\n');
+}
+
+function nextStepRefreshInstruction(afterCompaction) {
+  const lead = afterCompaction
+    ? 'Context was compacted—restoring the active end-of-turn next-step reminder (do not re-run prompt rewriting for this turn):'
+    : 'Long-turn reminder (keep this active when you write your final reply; do not re-run prompt rewriting for this turn):';
+  return `${lead}\n${nextStepInstruction()}`;
 }
 
 function composeInstruction(primary, includeNext) {
@@ -757,13 +1004,29 @@ function cmdPrompt(payload) {
 
   const digest = digestText(curBlocks.text);
   const tx = inspectTranscript(payload, curBlocks, digest);
-  if (!dedupeTurn(convId, payload, tx, digest)) return out({});
+  const isAwaiting = rewriteEnabled
+    ? (tx.hasTranscriptTruth ? tx.lastReplyWasOptimizerPrompt : session.awaitingConfirm)
+    : (session.awaitingConfirm && (tx.hasTranscriptTruth ? tx.lastReplyWasOptimizerPrompt : true));
+  const isBypass = BYPASS_PREFIX_RE.test(text);
+  const isControl = isControlCommand(text);
+  const isAnswer = /^A1:\s/.test(text);
+  const kind = classifyNonTask(text);
+  const willHandleCmd = Boolean(cmdMatch && !isMetaCmd);
+  const nextEligible = !willHandleCmd && !isControl && !isAnswer && (
+    isAwaiting ? !isBypass : (kind !== 'silent')
+  );
 
-  if (cmdMatch && !isMetaCmd) {
+  const claim = claimTurnOrRefresh(convId, payload, tx, digest, curBlocks.outerMeta, nextEnabled, nextEligible);
+  if (claim.action === 'skip') return out({});
+  if (claim.action === 'refresh-next') {
+    return out(injectOutput(nextStepRefreshInstruction(claim.afterCompaction)));
+  }
+
+  if (willHandleCmd) {
     return handleCommand(convId, session, cmdMatch[1] || '');
   }
 
-  if (isControlCommand(text)) {
+  if (isControl) {
     if (session.awaitingConfirm) {
       writeSession(convId, { ...session, awaitingConfirm: false });
     }
@@ -771,19 +1034,16 @@ function cmdPrompt(payload) {
   }
 
   // ask_question structured answers (e.g., "A1: ...") start at line 1 and should never disrupt pending state.
-  if (/^A1:\s/.test(text)) {
+  if (isAnswer) {
     return out({});
   }
 
-  const isAwaiting = rewriteEnabled
-    ? (tx.hasTranscriptTruth ? tx.lastReplyWasOptimizerPrompt : session.awaitingConfirm)
-    : (session.awaitingConfirm && (tx.hasTranscriptTruth ? tx.lastReplyWasOptimizerPrompt : true));
   if (!isAwaiting && session.awaitingConfirm) {
     writeSession(convId, { ...session, awaitingConfirm: false });
   }
 
   if (isAwaiting) {
-    if (BYPASS_PREFIX_RE.test(text)) {
+    if (isBypass) {
       writeSession(convId, { ...session, awaitingConfirm: false });
       return out({});
     }
@@ -794,7 +1054,6 @@ function cmdPrompt(payload) {
 
   if (!rewriteEnabled && !nextEnabled) return out({});
 
-  const kind = classifyNonTask(text);
   if (kind === 'silent') return out({});
 
   if (kind === 'actionable' || !rewriteEnabled) {

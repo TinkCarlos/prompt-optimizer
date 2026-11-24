@@ -75,8 +75,8 @@ Use this prompt? (approve / edit / use original)
 
 ## 5. After finishing a task: next-step prompt suggestions
 
-- **Default is silence (omit unless genuinely useful)**: Silently judge whether an obvious, high-value next prompt exists in two cases: (a) after completing a substantive task with concrete remaining verification, risks, or next steps; or (b) after handing the user a concrete offline/external action to complete and return with results to continue a known workflow (such as taking listed screenshots, exporting or gathering files, or finishing a manual setup/release step). If the task is self-contained/done or you have to stretch to think of one, omit this block completely—never suggest just for the sake of suggesting.
-- **When to stay silent (omit completely)**:
+- **When to include (do not drop in long or compacted turns)**: Before ending any substantive final reply—especially after long multi-step tool runs or context compaction—check whether an obvious, high-value next prompt grounded in context and loaded session memory/rules exists in two cases: (a) after completing substantive work with concrete remaining verification, risks, or next steps; or (b) after handing the user a concrete offline/external action to complete and return with results to continue a known workflow (such as taking listed screenshots, exporting or gathering files, or finishing a manual setup/release step). Whenever such a next step exists, **always** append this block at the very end of the reply (do not bury it inside casual prose like "you can ask me to...").
+- **When to stay silent (omit completely—never suggest just for the sake of suggesting)**:
   1. The task is complete/self-contained, or no concrete next step stands out (never invent filler like "want me to write a summary?").
   2. Outputting an optimized-prompt confirmation turn (`### Optimized Prompt` or localized equivalent).
   3. Asking open-ended clarifying questions whose answer you cannot predict (missing requirements, preferences, or unknown choices), or blocking on login, 2FA, CAPTCHA, or payment. (Concrete user-action handoffs whose return prompt is predictable are allowed.)

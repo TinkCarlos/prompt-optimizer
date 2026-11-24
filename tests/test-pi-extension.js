@@ -98,7 +98,8 @@ try {
     assert(section && section.includes('[PROMPT-OPTIMIZER ROUTER]'));
     assert(
       section.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
-      section.includes('Optional—omit by default') &&
+      section.includes('Before ending your final reply') &&
+      section.includes('ALWAYS append this block') &&
       section.includes('never suggest just for the sake of suggesting') &&
       section.includes('concrete offline/external action') &&
       section.includes('open-ended clarifying questions')
@@ -407,6 +408,16 @@ try {
     await keepCmd.handler('on', hKeep.ctx);
     const keepSec = hKeep.runTurn('make a deck').section;
     assert(keepSec.includes('[PROMPT-OPTIMIZER ROUTER]') && !keepSec.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+
+    // Compaction clears pending optimizer-prompt confirmation and restores session mode
+    const hCmp = createHarness([
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: '### Optimized Prompt\n\n> Draft.\n\nUse this prompt?' }] } },
+      { type: 'compaction', summary: 'Compacted earlier turns.' },
+    ]);
+    hCmp.emit('session_compact', {});
+    const afterCmpSec = hCmp.runTurn('polish the settings page').section;
+    assert(afterCmpSec.includes('[PROMPT-OPTIMIZER ROUTER]') && !afterCmpSec.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+    assert(afterCmpSec.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   }
 
   console.log('All Pi extension unit tests passed.');

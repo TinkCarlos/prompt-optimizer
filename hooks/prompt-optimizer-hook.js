@@ -32,6 +32,8 @@ const OPTIMIZER_HEADING_RE = /^#{2,4}\s*(?:优化后的提问|优化后的提示
 const SKILL_META_RE = /(?:(?:这个|该|当前|本|此)\s*(?:skill|技能|hook|钩子|扩展|插件|脚本|提示词优化器)|SKILL\.md|\b(?:this|the)\s+(?:skill|hook|extension|plugin|script|repo|readme|prompt-optimizer)\b|^(?:(?:还有|有|存在|哪里有)(?:什么|啥)?问题|为什么(?:没触发|不触发|会触发|没生效|不生效|老是|总是)|(?:怎么|如何)(?:用|安装|配置|工作|触发|关闭|开启|修复|优化)|(?:审查|检查|修复|优化|改进|重构|调试)(?:一下)?(?:这个|该|当前|本)?\s*(?:skill|技能|hook|钩子|扩展|插件|脚本)|what(?:'s| is) wrong|any (?:issues?|bugs?|problems?)|how does (?:this|it) work|why (?:didn't|did|doesn't|isn't) (?:this|it)|(?:review|audit|inspect|debug|fix|edit|update|refactor|improve)\s+(?:this|the|your|its)?\s*(?:skill|hook|extension|plugin|script|prompt-optimizer)\b))/i;
 const STATE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MAX_TRANSCRIPT_SCAN_BYTES = 64 * 1024 * 1024;
+const TRANSCRIPT_CHUNK_BYTES = 4 * 1024 * 1024;
 
 function isControlCommand(text) {
   return /^[/@$][^\s]+$/.test(text) || CONTROL_CMD_RE.test(text);
@@ -247,75 +249,127 @@ function getEntryRole(entry) {
   return null;
 }
 
+function isCompactionEntry(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (entry.type === 'compacted' || entry.isCompactSummary) return true;
+  if (entry.type === 'system' && entry.subtype === 'compact_boundary') return true;
+  if (entry.payload && typeof entry.payload === 'object' &&
+      (entry.payload.type === 'compacted' || entry.payload.type === 'context_compacted')) {
+    return true;
+  }
+  return false;
+}
+
+function readHostTranscriptSlice(fd, start, end) {
+  const len = end - start;
+  if (len <= 0) return { rows: [], firstCompleteOffset: start };
+  const buf = Buffer.alloc(len);
+  fs.readSync(fd, buf, 0, len, start);
+  let firstCompleteOffset = start;
+  let contentBuf = buf;
+  if (start > 0) {
+    const nlIdx = buf.indexOf(0x0a);
+    if (nlIdx === -1) {
+      return { rows: [], firstCompleteOffset: end };
+    }
+    firstCompleteOffset = start + nlIdx + 1;
+    contentBuf = buf.subarray(nlIdx + 1);
+  }
+  const lines = contentBuf.toString('utf8').split(/\r?\n/);
+  const rows = [];
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      const d = JSON.parse(line);
+      if (d && typeof d === 'object') rows.push(d);
+    } catch (_) {}
+  }
+  return { rows, firstCompleteOffset };
+}
+
+function scanHostRows(rows, normalizedCur, state) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const entry = rows[i];
+    if (isCompactionEntry(entry)) {
+      return { hasTranscriptTruth: true, lastReplyWasOptimizerPrompt: false };
+    }
+    const role = getEntryRole(entry);
+    if (role === 'assistant') {
+      const text = extractClaudeCodexText(entry).trim();
+      if (!text) {
+        state.sawPostUserActivity = true;
+        continue;
+      }
+      return { hasTranscriptTruth: true, lastReplyWasOptimizerPrompt: looksLikeOptimizedPrompt(text) };
+    }
+    if (role === 'user') {
+      const uText = unwrapHarnessPrompt(extractClaudeCodexText(entry));
+      // Tool results in Claude Code appear as role='user' with empty text; do not treat as a human turn boundary.
+      if (!uText) {
+        state.sawPostUserActivity = true;
+        continue;
+      }
+      if (!state.skippedCurrentUser && !state.sawPostUserActivity && normalizedCur && uText === normalizedCur) {
+        state.skippedCurrentUser = true;
+        continue;
+      }
+      // Hit an earlier user turn before any assistant text reply (e.g., tool-only or interrupted turn).
+      return { hasTranscriptTruth: true, lastReplyWasOptimizerPrompt: false };
+    }
+  }
+  return null;
+}
+
 function inspectHostTranscript(tpath, curPrompt) {
   const result = { hasTranscriptTruth: false, lastReplyWasOptimizerPrompt: false };
   if (!tpath) return result;
   const normalizedCur = unwrapHarnessPrompt(curPrompt);
+  let fd = null;
   try {
     const size = fs.statSync(tpath).size;
+    fd = fs.openSync(tpath, 'r');
+    let tailFirstComplete = size;
+    let tailState = { skippedCurrentUser: false, sawPostUserActivity: false };
     for (const maxBytes of [256 * 1024, 1024 * 1024, 4 * 1024 * 1024]) {
       const start = Math.max(0, size - maxBytes);
-      const fd = fs.openSync(tpath, 'r');
-      const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      fs.closeSync(fd);
-      const lines = buf.toString('utf8').split(/\r?\n/);
-      if (start > 0 && lines.length) lines.shift();
-
-      const rows = [];
-      for (const line of lines) {
-        if (!line) continue;
-        try {
-          const d = JSON.parse(line);
-          if (d && typeof d === 'object') rows.push(d);
-        } catch (_) {}
-      }
-
-      let skippedCurrentUser = false;
-      let sawPostUserActivity = false;
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const role = getEntryRole(rows[i]);
-        if (role === 'assistant') {
-          const text = extractClaudeCodexText(rows[i]).trim();
-          if (!text) {
-            sawPostUserActivity = true;
-            continue;
-          }
-          result.hasTranscriptTruth = true;
-          result.lastReplyWasOptimizerPrompt = looksLikeOptimizedPrompt(text);
-          return result;
-        }
-        if (role === 'user') {
-          const uText = unwrapHarnessPrompt(extractClaudeCodexText(rows[i]));
-          // Tool results in Claude Code appear as role='user' with empty text; do not treat as a human turn boundary.
-          if (!uText) {
-            sawPostUserActivity = true;
-            continue;
-          }
-          if (!skippedCurrentUser && !sawPostUserActivity && normalizedCur && uText === normalizedCur) {
-            skippedCurrentUser = true;
-            continue;
-          }
-          // Hit an earlier user turn before any assistant text reply (e.g., tool-only or interrupted turn).
-          result.hasTranscriptTruth = true;
-          result.lastReplyWasOptimizerPrompt = false;
-          return result;
-        }
-      }
+      const slice = readHostTranscriptSlice(fd, start, size);
+      tailFirstComplete = slice.firstCompleteOffset;
+      tailState = { skippedCurrentUser: false, sawPostUserActivity: false };
+      const found = scanHostRows(slice.rows, normalizedCur, tailState);
+      if (found) return found;
       if (start === 0) {
-        result.hasTranscriptTruth = true;
-        result.lastReplyWasOptimizerPrompt = false;
-        break;
+        return { hasTranscriptTruth: true, lastReplyWasOptimizerPrompt: false };
       }
     }
-  } catch (_) {}
+    if (size > 4 * 1024 * 1024) {
+      const floor = Math.max(0, size - MAX_TRANSCRIPT_SCAN_BYTES);
+      let cursor = size - 4 * 1024 * 1024;
+      let chunkEnd = tailFirstComplete;
+      while (cursor > floor) {
+        const nextStart = Math.max(floor, cursor - TRANSCRIPT_CHUNK_BYTES);
+        const slice = readHostTranscriptSlice(fd, nextStart, chunkEnd);
+        const found = scanHostRows(slice.rows, normalizedCur, tailState);
+        if (found) return found;
+        chunkEnd = slice.firstCompleteOffset;
+        cursor = nextStart;
+      }
+      if (floor === 0) {
+        return { hasTranscriptTruth: true, lastReplyWasOptimizerPrompt: false };
+      }
+    }
+  } catch (_) {
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
   return result;
 }
 
-function wrapContext(text) {
+function wrapContext(text, eventName) {
   return {
     hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
+      hookEventName: eventName || 'UserPromptSubmit',
       additionalContext: text,
     },
   };
@@ -341,10 +395,17 @@ function gateInstruction(isExplicit) {
 function nextStepInstruction() {
   return [
     '[PROMPT-OPTIMIZER NEXT-STEP]',
-    'Optional—omit by default (stay silent in most turns). Only append this block when an obvious, high-value next prompt grounded in context and loaded session memory/rules genuinely exists: (a) after substantive work with concrete remaining verification, risks, or next steps, or (b) after handing the user a concrete offline/external action to complete and return with results (draft the exact return prompt naming items, counts, and next action).',
-    '- Omit completely when the task is done/self-contained, when nothing clearly useful stands out (never suggest just for the sake of suggesting), during optimized-prompt confirmation turns, when asking open-ended clarifying questions, when blocked on login/payment, or for chit-chat/config/trivial Q&A.',
-    "- When included, append after `---` and one short bold localized label: 1 concrete 1–2 sentence prompt in the user's language and voice (or 2–3 `- ` bullets only at a real fork). Plain text only—no `###`, `>`, or code fences.",
+    'Before ending your final reply (even after long tool runs or context compaction), check whether an obvious, high-value next prompt grounded in context and loaded session memory/rules exists: (a) after substantive work with concrete remaining verification, risks, or next steps, or (b) after handing the user a concrete offline/external action to complete and return with results (draft the exact return prompt naming items, counts, and next action). When it exists, ALWAYS append this block at the very end—do not bury it in prose.',
+    '- Omit completely (stay silent, never suggest just for the sake of suggesting) when the task is done/self-contained, during optimized-prompt confirmation turns, when asking open-ended clarifying questions, when blocked on login/payment, or for chit-chat/config/trivial Q&A.',
+    "- Format: `---` and one short bold localized label, then 1 concrete 1–2 sentence prompt in the user's language and voice (or 2–3 `- ` bullets only at a real fork). Plain text only—no `###`, `>`, or code fences.",
   ].join('\n');
+}
+
+function nextStepRefreshInstruction(afterCompaction) {
+  const lead = afterCompaction
+    ? 'Context was compacted—restoring the active end-of-turn next-step reminder (do not re-run prompt rewriting for this turn):'
+    : 'Long-turn reminder (keep this active when you write your final reply; do not re-run prompt rewriting for this turn):';
+  return `${lead}\n${nextStepInstruction()}`;
 }
 
 function composeInstruction(primary, includeNext) {
@@ -446,13 +507,28 @@ function main() {
   }
   if (!payload || typeof payload !== 'object') return;
 
+  const sessionId = String(payload.session_id || 'default');
+  const session = readSession(sessionId);
+
+  const hookEvent = String(payload.hook_event_name || '');
+  const source = String(payload.source || '').toLowerCase();
+  if (hookEvent === 'SessionStart' || (!payload.prompt && source === 'compact')) {
+    if (session.awaitingConfirm) {
+      writeSession(sessionId, { ...session, awaitingConfirm: false });
+    }
+    if (source === 'compact') {
+      const { nextEnabled } = resolveModes(session);
+      if (nextEnabled) {
+        return out(wrapContext(nextStepRefreshInstruction(true), 'SessionStart'));
+      }
+    }
+    return;
+  }
+
   const rawPrompt = typeof payload.prompt === 'string' ? payload.prompt.trim() : '';
   if (!rawPrompt || MACHINE_RE.test(rawPrompt)) return;
   const prompt = unwrapHarnessPrompt(rawPrompt);
   if (!prompt || MACHINE_RE.test(prompt)) return;
-
-  const sessionId = String(payload.session_id || 'default');
-  const session = readSession(sessionId);
 
   const cmdMatch = prompt.match(/^[/@$]prompt-optimizer(?:[:：]prompt-optimizer)?(?:\s+([\s\S]*))?$/i);
   const cmdArg = cmdMatch ? (cmdMatch[1] || '').trim() : '';

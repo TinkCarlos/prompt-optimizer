@@ -30,7 +30,8 @@ try {
   assert(ctx.includes('[PROMPT-OPTIMIZER ROUTER]') && ctx.includes('REWRITE') && ctx.includes('SKIP'));
   assert(
     ctx.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
-    ctx.includes('Optional—omit by default') &&
+    ctx.includes('Before ending your final reply') &&
+    ctx.includes('ALWAYS append this block') &&
     ctx.includes('never suggest just for the sake of suggesting') &&
     ctx.includes('concrete offline/external action') &&
     ctx.includes('open-ended clarifying questions')
@@ -193,6 +194,90 @@ try {
   context('claude', { session_id: 's-keep-next', prompt: '/prompt-optimizer on' });
   const keepNextCtx = context('claude', { session_id: 's-keep-next', prompt: 'make a deck' });
   assert(keepNextCtx.includes('[PROMPT-OPTIMIZER ROUTER]') && !keepNextCtx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+
+  // Claude SessionStart(source="compact") restores NEXT-STEP reminder and clears stale awaitingConfirm
+  context('claude', { session_id: 's-claude-cmp', prompt: '/prompt-optimizer next on' });
+  context('claude', { session_id: 's-claude-cmp', prompt: 'make a deck' });
+  const cmpRaw = run('claude', { session_id: 's-claude-cmp', hook_event_name: 'SessionStart', source: 'compact' });
+  const cmpObj = JSON.parse(cmpRaw);
+  assert.strictEqual(cmpObj.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert(
+    cmpObj.hookSpecificOutput.additionalContext.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
+    cmpObj.hookSpecificOutput.additionalContext.includes('Context was compacted') &&
+    !cmpObj.hookSpecificOutput.additionalContext.includes('[PROMPT-OPTIMIZER ROUTER]')
+  );
+  // SessionStart(compact) stays silent when next is off
+  context('claude', { session_id: 's-claude-cmp-off', prompt: '/prompt-optimizer next off' });
+  assert.strictEqual(run('claude', { session_id: 's-claude-cmp-off', hook_event_name: 'SessionStart', source: 'compact' }), '');
+
+  // Compaction entry after an optimizer prompt clears pending confirmation (Codex & Claude shapes)
+  const codexCmpTx = path.join(tmp, 'codex-compacted.jsonl');
+  fs.writeFileSync(codexCmpTx, [
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '### Optimized Prompt\n\n> Draft.\n\nUse this prompt?' }] } },
+    { type: 'compacted', payload: { message: '', replacement_history: [] } },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const afterCodexCmp = context('codex', { session_id: 's-codex-cmp', transcript_path: codexCmpTx, prompt: 'redesign the onboarding page' });
+  assert(afterCodexCmp.includes('[PROMPT-OPTIMIZER ROUTER]') && !afterCodexCmp.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+
+  // Transcript > 4MB of tool outputs after a normal reply still yields transcript truth (no stuck awaitingConfirm)
+  context('claude', { session_id: 's-huge-tx', prompt: 'make a deck' }); // sets awaitingConfirm=true
+  const hugeTx = path.join(tmp, 'huge-claude.jsonl');
+  const fd = fs.openSync(hugeTx, 'w');
+  fs.writeSync(fd, JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Finished generating the deck.' }] },
+  }) + '\n');
+  const padLine = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'z'.repeat(16000) }] } }) + '\n';
+  for (let i = 0; i < 320; i++) fs.writeSync(fd, padLine); // ~5.1 MB of tool outputs
+  fs.closeSync(fd);
+  const afterHuge = context('claude', { session_id: 's-huge-tx', transcript_path: hugeTx, prompt: 'now polish the landing page' });
+  assert(afterHuge.includes('[PROMPT-OPTIMIZER ROUTER]') && !afterHuge.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+
+  // Assistant reply straddling the exact size - 4MB chunk boundary must NOT be dropped
+  context('claude', { session_id: 's-straddle', prompt: 'make a deck' }); // sets awaitingConfirm=true
+  const straddleTx = path.join(tmp, 'straddle-claude.jsonl');
+  const fd2 = fs.openSync(straddleTx, 'w');
+  // Put an earlier optimizer prompt before the boundary, then place a normal assistant reply RIGHT across the 4MB tail boundary
+  fs.writeSync(fd2, JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: '### Optimized Prompt\n\n> Old draft.\n\nUse this prompt?' }] },
+  }) + '\n');
+  const boundaryReply = JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Normal reply straddling 4MB boundary ' + 'a'.repeat(4000) }] },
+  }) + '\n';
+  fs.writeSync(fd2, boundaryReply);
+  // Pad tail to just under 4MB so `size - 4MB` lands right in the middle of `boundaryReply`!
+  const tailTarget = 4 * 1024 * 1024 - 1500;
+  const smallPad = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'p'.repeat(15900) }] } }) + '\n';
+  let tailWritten = 0;
+  while (tailWritten + smallPad.length < tailTarget) {
+    fs.writeSync(fd2, smallPad);
+    tailWritten += smallPad.length;
+  }
+  const rem = tailTarget - tailWritten;
+  if (rem > 100) {
+    fs.writeSync(fd2, JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'q'.repeat(rem - 90) }] } }) + '\n');
+  }
+  fs.closeSync(fd2);
+  const afterStraddle = context('claude', { session_id: 's-straddle', transcript_path: straddleTx, prompt: 'redesign the footer' });
+  assert(afterStraddle.includes('[PROMPT-OPTIMIZER ROUTER]') && !afterStraddle.includes('[PROMPT-OPTIMIZER PENDING-REPLY]'));
+
+  // Flushed current user row that is itself >4MB (e.g., base64 screenshot) must still be skipped to see prior optimizer prompt
+  context('claude', { session_id: 's-big-user-row', prompt: 'make a deck' });
+  const bigUserTx = path.join(tmp, 'big-user-row.jsonl');
+  const fd3 = fs.openSync(bigUserTx, 'w');
+  fs.writeSync(fd3, JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: '### Optimized Prompt\n\n> Build a clean deck.\n\nUse this prompt?' }] },
+  }) + '\n');
+  fs.writeSync(fd3, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: 'approve with screenshot' }, { type: 'image', data: 'x'.repeat(4 * 1024 * 1024 + 5000) }] },
+  }) + '\n');
+  fs.closeSync(fd3);
+  const afterBigUser = context('claude', { session_id: 's-big-user-row', transcript_path: bigUserTx, prompt: 'approve with screenshot' });
+  assert(afterBigUser.startsWith('[PROMPT-OPTIMIZER PENDING-REPLY]'));
 
   console.log('All cross-host (Claude Code / Codex) hook tests passed.');
 } finally {

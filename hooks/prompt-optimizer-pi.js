@@ -274,7 +274,9 @@ function getLastAssistantText(entries, currentPrompt) {
   let sawPostUserActivity = false;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if (!entry || entry.type !== 'message' || !entry.message) continue;
+    if (!entry) continue;
+    if (entry.type === 'compaction') return '';
+    if (entry.type !== 'message' || !entry.message) continue;
     const role = entry.message.role;
     if (role === 'assistant') {
       const text = extractAssistantText(entry.message);
@@ -322,9 +324,9 @@ function gateInstruction(isExplicit, skillPath) {
 function nextStepInstruction() {
   return [
     '[PROMPT-OPTIMIZER NEXT-STEP]',
-    'Optional—omit by default (stay silent in most turns). Only append this block when an obvious, high-value next prompt grounded in context and loaded session memory/rules genuinely exists: (a) after substantive work with concrete remaining verification, risks, or next steps, or (b) after handing the user a concrete offline/external action to complete and return with results (draft the exact return prompt naming items, counts, and next action).',
-    '- Omit completely when the task is done/self-contained, when nothing clearly useful stands out (never suggest just for the sake of suggesting), during optimized-prompt confirmation turns, when asking open-ended clarifying questions, when blocked on login/payment, or for chit-chat/config/trivial Q&A.',
-    "- When included, append after `---` and one short bold localized label: 1 concrete 1–2 sentence prompt in the user's language and voice (or 2–3 `- ` bullets only at a real fork). Plain text only—no `###`, `>`, or code fences.",
+    'Before ending your final reply (even after long tool runs or context compaction), check whether an obvious, high-value next prompt grounded in context and loaded session memory/rules exists: (a) after substantive work with concrete remaining verification, risks, or next steps, or (b) after handing the user a concrete offline/external action to complete and return with results (draft the exact return prompt naming items, counts, and next action). When it exists, ALWAYS append this block at the very end—do not bury it in prose.',
+    '- Omit completely (stay silent, never suggest just for the sake of suggesting) when the task is done/self-contained, during optimized-prompt confirmation turns, when asking open-ended clarifying questions, when blocked on login/payment, or for chit-chat/config/trivial Q&A.',
+    "- Format: `---` and one short bold localized label, then 1 concrete 1–2 sentence prompt in the user's language and voice (or 2–3 `- ` bullets only at a real fork). Plain text only—no `###`, `>`, or code fences.",
   ].join('\n');
 }
 
@@ -473,9 +475,9 @@ function promptOptimizerExtension(pi) {
     restoreSessionMode(ctx);
   });
 
-  for (const eventName of ['session_tree', 'session_switch', 'session_branch']) {
+  for (const eventName of ['session_tree', 'session_switch', 'session_branch', 'session_compact']) {
     pi.on(eventName, (_event, ctx) => {
-      if (eventName === 'session_switch') {
+      if (eventName === 'session_switch' || eventName === 'session_compact') {
         pendingExplicitPrompts = [];
         awaitingExplicitConfirm = false;
         pendingRawInput = null;
