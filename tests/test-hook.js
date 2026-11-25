@@ -488,9 +488,12 @@ try {
     const bothText = getInjectedText(res);
     assert(
       bothText.includes('[PROMPT-OPTIMIZER ROUTER]') &&
+      bothText.includes('FIRST—before calling tools') &&
+      bothText.includes('prefer REWRITE') &&
       bothText.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
       bothText.includes('Before ending your final reply') &&
       bothText.includes('ALWAYS append this block') &&
+      bothText.includes('AFTER any closing risk/skipped-check notes') &&
       bothText.includes('never suggest just for the sake of suggesting') &&
       bothText.includes('concrete offline/external action') &&
       bothText.includes('open-ended clarifying questions'),

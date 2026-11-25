@@ -78,7 +78,7 @@ Hook 或 Extension 在每条消息之前运行，提示助手应用这个 Skill�
 | Antigravity | 支持 | `hooks/prompt-optimizer-agy.js`（`next` 默认 `on`） |
 | T3 Code | 支持 | Claude Code、Codex、Pi 线程自动复用对应宿主 Hook（均已自动解包 T3 的 `<t3_code_instructions>` / `<user_request>` 外壳）；Antigravity 线程需运行 `node scripts/install-t3.js` 写入隔离目录 |
 | Claude Code | 支持 | `hooks/prompt-optimizer-hook.js claude`（`next` 默认 `on`） |
-| Codex | 支持 | `hooks/prompt-optimizer-hook.js codex`（`next` 默认 `off`，避免与 Codex 原生输入框建议重复；需要你信任新 Hook） |
+| Codex | 支持 | `hooks/prompt-optimizer-hook.js codex`（`next` 默认 `on`；如想避免与 Codex 原生输入框建议重复，可执行 `/prompt-optimizer next default off`；需要你信任新 Hook） |
 | Pi | 支持 | `pi install git:github.com/TinkCarlos/prompt-optimizer` 或 `hooks/prompt-optimizer-pi.js`（`next` 默认 `on`） |
 | Cursor | 不支持 | 它的提交前 Hook 不能给模型追加上下文，请手动调用 Skill |
 | Grok | 未测试 | 请手动调用 Skill |
@@ -156,7 +156,7 @@ node scripts/install-t3.js
 - `/prompt-optimizer on | off | status`：开关当前会话的自动模式（`off` 会同时关闭改写和下一步建议）并查看当前状态。
 - `/prompt-optimizer default on | off`：新会话的改写默认值（默认 `on`）。
 - `/prompt-optimizer next on | off`：单独开关当前会话的回复后下一步建议（即使在 `/prompt-optimizer off` 后执行 `/prompt-optimizer next on`，也可只保留下一步建议）。
-- `/prompt-optimizer next default on | off`：新会话的下一步建议默认值（Antigravity、Claude Code、Pi 默认 `on`；Codex 默认 `off`）。
+- `/prompt-optimizer next default on | off`：新会话的下一步建议默认值（Antigravity、Claude Code、Codex、Pi 均默认 `on`）。
 - `/prompt-optimizer <内容>`：即使自动模式关闭，也强制改写一次。
 - 消息开头加 `原文：`、`直接：` 或 `raw:`，本次跳过改写。
 

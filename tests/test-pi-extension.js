@@ -95,11 +95,17 @@ try {
     const h = createHarness();
     h.emit('session_start', {});
     const { section } = h.runTurn('帮我做个PPT介绍新产品');
-    assert(section && section.includes('[PROMPT-OPTIMIZER ROUTER]'));
+    assert(
+      section &&
+      section.includes('[PROMPT-OPTIMIZER ROUTER]') &&
+      section.includes('FIRST—before calling tools') &&
+      section.includes('prefer REWRITE')
+    );
     assert(
       section.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
       section.includes('Before ending your final reply') &&
       section.includes('ALWAYS append this block') &&
+      section.includes('AFTER any closing risk/skipped-check notes') &&
       section.includes('never suggest just for the sake of suggesting') &&
       section.includes('concrete offline/external action') &&
       section.includes('open-ended clarifying questions')

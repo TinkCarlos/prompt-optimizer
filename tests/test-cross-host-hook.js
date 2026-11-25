@@ -27,11 +27,18 @@ function context(host, payload) {
 try {
   // Claude Code: a vague task is routed with NEXT-STEP enabled by default, and the skill path points at the Claude skills folder.
   let ctx = context('claude', { session_id: 's1', prompt: 'make a deck introducing the new product' });
-  assert(ctx.includes('[PROMPT-OPTIMIZER ROUTER]') && ctx.includes('REWRITE') && ctx.includes('SKIP'));
+  assert(
+    ctx.includes('[PROMPT-OPTIMIZER ROUTER]') &&
+    ctx.includes('REWRITE') &&
+    ctx.includes('SKIP') &&
+    ctx.includes('FIRST—before calling tools') &&
+    ctx.includes('prefer REWRITE')
+  );
   assert(
     ctx.includes('[PROMPT-OPTIMIZER NEXT-STEP]') &&
     ctx.includes('Before ending your final reply') &&
     ctx.includes('ALWAYS append this block') &&
+    ctx.includes('AFTER any closing risk/skipped-check notes') &&
     ctx.includes('never suggest just for the sake of suggesting') &&
     ctx.includes('concrete offline/external action') &&
     ctx.includes('open-ended clarifying questions')
@@ -40,11 +47,12 @@ try {
   assert(!context('claude', { session_id: 's1b', prompt: 'you decide' }).includes('[PROMPT-OPTIMIZER ROUTER]') && context('claude', { session_id: 's1b', prompt: 'you decide' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   assert.strictEqual(run('claude', { session_id: 's1c', prompt: 'gracias' }), '');
 
-  // Codex: the skill path points at the Codex skills folder, and NEXT-STEP defaults to off.
+  // Codex: the skill path points at the Codex skills folder, and NEXT-STEP defaults to on.
   ctx = context('codex', { session_id: 's2', prompt: 'make a deck introducing the new product' });
   assert(ctx.includes(path.join('.codex', 'skills', 'prompt-optimizer', 'SKILL.md')));
-  assert(!ctx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
-  assert.strictEqual(run('codex', { session_id: 's2-ctx', prompt: 'you decide' }), '');
+  assert(ctx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+  const codexActCtx = context('codex', { session_id: 's2-ctx', prompt: 'you decide' });
+  assert(!codexActCtx.includes('[PROMPT-OPTIMIZER ROUTER]') && codexActCtx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
   // A stale awaiting flag is ignored when the previous assistant reply was an ordinary answer (Claude Code log shape).
   const claudeTx = path.join(tmp, 'claude.jsonl');
@@ -55,14 +63,14 @@ try {
   ctx = context('claude', { session_id: 's2c', transcript_path: claudeTx, prompt: 'write the weekly report' });
   assert(ctx.includes('[PROMPT-OPTIMIZER ROUTER]'));
 
-  // The reply after an optimized prompt is a pending confirmation, in any language (Codex log shape, Spanish; Codex skips NEXT-STEP by default).
+  // The reply after an optimized prompt is a pending confirmation, in any language (Codex log shape, Spanish; Codex includes NEXT-STEP by default).
   const codexTx = path.join(tmp, 'codex.jsonl');
   fs.writeFileSync(codexTx, JSON.stringify({
     type: 'response_item',
     payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '### Prompt optimizado\n\n> Prepara una presentación del producto.\n\n¿Usar este prompt? (aprobar / editar / usar original)' }] },
   }) + '\n');
   ctx = context('codex', { session_id: 's3', transcript_path: codexTx, prompt: 'aprobar' });
-  assert(ctx.includes('[PROMPT-OPTIMIZER PENDING-REPLY]') && !ctx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+  assert(ctx.includes('[PROMPT-OPTIMIZER PENDING-REPLY]') && ctx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
   // False-positive guard: short reply with --- next-step footer must NOT be detected as confirmation prompt in Claude or Codex.
   const claudeFooterTx = path.join(tmp, 'claude-footer.jsonl');
@@ -78,8 +86,10 @@ try {
   }) + '\n');
   assert(context('codex', { session_id: 's3x-fp', transcript_path: codexFooterTx, prompt: 'check auth flow too' }).includes('[PROMPT-OPTIMIZER ROUTER]'));
 
-  // Silent paths: delegation, acknowledgements, machine prompts (including Codex question replies), "raw:" bypass, bare/control slash commands.
-  for (const prompt of ['you decide', 'gracias', '[KROUTER_PROACTIVE] hi', '<send_user_message_question_reply> [{"questionItem":"1"}]', 'raw: fix the typo', '/compact', '/compact focus on tests', '/ponytail off', '/frontend-design-lab']) {
+  // Silent paths: acknowledgements, machine prompts (including Codex question replies), "raw:" bypass, bare/control slash commands; "you decide" carries NEXT-STEP only.
+  const codexDecide = context('codex', { session_id: 's4-act', prompt: 'you decide' });
+  assert(!codexDecide.includes('[PROMPT-OPTIMIZER ROUTER]') && codexDecide.includes('[PROMPT-OPTIMIZER NEXT-STEP]'), 'you decide');
+  for (const prompt of ['gracias', '[KROUTER_PROACTIVE] hi', '<send_user_message_question_reply> [{"questionItem":"1"}]', 'raw: fix the typo', '/compact', '/compact focus on tests', '/ponytail off', '/frontend-design-lab']) {
     assert.strictEqual(run('codex', { session_id: 's4', prompt }), '', prompt);
   }
 
@@ -110,7 +120,10 @@ try {
   const expCtx = context('codex', { session_id: 's7', prompt: '/prompt-optimizer plan our launch' });
   assert(expCtx.includes('[PROMPT-OPTIMIZER EXPLICIT]') && !expCtx.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
-  // Next-step toggles: /prompt-optimizer next on in Codex, off + next on, and host-scoped next defaults.
+  // Next-step toggles: /prompt-optimizer next off/on in Codex, off + next on, and host-scoped next defaults.
+  assert(context('codex', { session_id: 's8', prompt: '/prompt-optimizer next off' }).includes('OFF'));
+  const nextOffCodex = context('codex', { session_id: 's8', prompt: 'make a deck' });
+  assert(nextOffCodex.includes('[PROMPT-OPTIMIZER ROUTER]') && !nextOffCodex.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   assert(context('codex', { session_id: 's8', prompt: '/prompt-optimizer next on' }).includes('ON'));
   assert(context('codex', { session_id: 's8', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   assert(context('codex', { session_id: 's8', prompt: '/prompt-optimizer off' }).includes('OFF'));
@@ -119,12 +132,14 @@ try {
   const nextOnlyCodex = context('codex', { session_id: 's8', prompt: 'make a deck' });
   assert(!nextOnlyCodex.includes('[PROMPT-OPTIMIZER ROUTER]') && nextOnlyCodex.includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
-  // Host-scoped defaults: changing Claude next default off does NOT disable Codex, and changing Codex next default on does NOT re-enable Claude.
+  // Host-scoped defaults: changing Claude next default off does NOT disable Codex, and toggling Codex next default does NOT affect Claude.
   context('claude', { session_id: 's9', prompt: '/prompt-optimizer next default off' });
   assert(!context('claude', { session_id: 's9-new', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
-  assert(!context('codex', { session_id: 's9-codex', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+  assert(context('codex', { session_id: 's9-codex', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+  context('codex', { session_id: 's9', prompt: '/prompt-optimizer next default off' });
+  assert(!context('codex', { session_id: 's9-codex2', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   context('codex', { session_id: 's9', prompt: '/prompt-optimizer next default on' });
-  assert(context('codex', { session_id: 's9-codex2', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
+  assert(context('codex', { session_id: 's9-codex3', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
   assert(!context('claude', { session_id: 's9-claude2', prompt: 'make a deck' }).includes('[PROMPT-OPTIMIZER NEXT-STEP]'));
 
   // Broken input fails open: no output, no crash.

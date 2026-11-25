@@ -10,21 +10,23 @@ First decide whether a rewrite is worth it. If it is, turn the user's words into
 
 ## 1. Step one: decide REWRITE or SKIP from context
 
+First—before calling other tools (including memory lookups, codebase reads, or web searches) or planning—silently decide `REWRITE` or `SKIP` from context. If you decide `REWRITE`, do not investigate the codebase or call other tools first; output only the rewritten prompt and confirmation line.
+
 - **How to answer**
   - Called as a standalone router (asked for the verdict only): reply with exactly `REWRITE` or `SKIP`, nothing else.
   - Running inline before a normal reply: on **SKIP**, stay completely silent about it. Do not mention routing or rewriting, do not load the rest of this skill, just answer or act. On **REWRITE**, continue to section 2.
   - The user names this skill explicitly (`/prompt-optimizer <text>`, "optimize this prompt"): skip the decision and go to section 2.
-- **Always SKIP (judge with the conversation context)**
+- **Always SKIP (only when clearly met; judge with the conversation context)**
   1. Pure venting, complaints, chit-chat or greetings with **no actionable request** ("ugh it broke again", "good morning").
   2. Pure confirmations, rejections, option picks, delegations or nudges ("yes", "option 2", "you decide", "do what you recommended", "continue", "fix it", "deploy").
-  3. A clear, unambiguous single-step edit or simple factual question ("change this button to `#2563eb`", "which file defines X?", "did you deploy it?").
+  3. An unambiguous single-step edit or single-fact lookup ("change this button to `#2563eb`", "which file defines X?", "did you deploy it?").
   4. Pure meta-commentary about this tool or asking how something worked, with no new build/design/fix work.
-  5. A message that is already concrete and specific (clear target, explicit criteria/constraints and verifiable outcome, including a concrete prompt copied from a prior next-step suggestion).
+  5. A message whose target, constraints, and verifiable outcome are **all** already explicit and concrete (including a concrete prompt copied from a prior next-step suggestion).
   6. A bare skill/command call with no task body, or a skill call whose instructions are already concrete and complete. (If the user leads with `/skill`, `$skill` or `@file` followed by a vague task—or asks to edit or optimize that skill itself—still evaluate it for REWRITE and keep the original reference intact.)
 - **REWRITE whenever both hold (first turn OR follow-up turns in the same conversation)**
-  1. It asks the AI to do substantive work—including a **follow-up requirement, redesign, bug fix, feature addition or revision** in an ongoing conversation, not only the first turn.
-  2. The wording is vague, subjective, colloquial, uses everyday layperson descriptions where precise domain terminology removes ambiguity (for example: "make a page that looks like glass", "wait a moment after typing before searching", "this section feels too plain, give it more visual polish", "make hover play the animation across all cards instead of only one"), or lacks concrete criteria, method or verification, or pastes an error, screenshot or material with no instruction.
-  - *Important*: A follow-up message that criticizes the current output **and** asks for changes with subjective or vague criteria is **REWRITE**, not SKIP. When rewriting a follow-up turn, ground it in the concrete module, page or feature already established in the conversation without inventing unstated requirements.
+  1. It asks the AI to do substantive work—including a **follow-up requirement, coding, redesign, bug fix, feature addition, revision, debugging/root-cause analysis, strategy/content/workflow improvement, doc comparison, or multi-part request** in an ongoing conversation, not only the first turn.
+  2. The wording is vague, subjective, colloquial, uses everyday layperson descriptions where precise domain terminology removes ambiguity (for example: "make a page that looks like glass", "wait a moment after typing before searching", "this section feels too plain, give it more visual polish", "make hover play the animation across all cards instead of only one"), or lacks clear scope, criteria, method or verification, or pastes an error, screenshot or material with broad or missing instructions.
+  - *Important*: Listing multiple actions or attaching screenshots does **not** make a request concrete when acceptance criteria, boundaries, or verification are unstated; when unsure between `REWRITE` and `SKIP` on a substantive task, prefer `REWRITE`. A follow-up message that criticizes the current output **and** asks for changes with subjective or vague criteria is **REWRITE**, not SKIP. When rewriting a follow-up turn, ground it in the concrete module, page or feature already established in the conversation without inventing unstated requirements.
 
 ## 2. Step two: rewrite rules
 
@@ -75,9 +77,9 @@ Use this prompt? (approve / edit / use original)
 
 ## 5. After finishing a task: next-step prompt suggestions
 
-- **When to include (do not drop in long or compacted turns)**: Before ending any substantive final reply—especially after long multi-step tool runs or context compaction—check whether an obvious, high-value next prompt grounded in context and loaded session memory/rules exists in two cases: (a) after completing substantive work with concrete remaining verification, risks, or next steps; or (b) after handing the user a concrete offline/external action to complete and return with results to continue a known workflow (such as taking listed screenshots, exporting or gathering files, or finishing a manual setup/release step). Whenever such a next step exists, **always** append this block at the very end of the reply (do not bury it inside casual prose like "you can ask me to...").
+- **When to include (do not drop in long or compacted turns)**: Before ending any substantive final reply—especially after long multi-step tool runs, plan-to-execution handoffs, or context compaction—check whether an obvious, high-value next prompt grounded in context and loaded session memory/rules exists in two cases: (a) after completing substantive work with concrete remaining verification, unverified risks, uncommitted/unpushed changes, or natural follow-up steps; or (b) after handing the user a concrete offline/external action to complete and return with results to continue a known workflow (such as taking listed screenshots, exporting or gathering files, or finishing a manual setup/release step). Whenever such a next step exists, **always** append this block at the very end—**after** any closing risk or skipped-check notes (such as Ponytail summaries)—and never let a closing note replace it or bury it inside casual prose like "you can ask me to...".
 - **When to stay silent (omit completely—never suggest just for the sake of suggesting)**:
-  1. The task is complete/self-contained, or no concrete next step stands out (never invent filler like "want me to write a summary?").
+  1. The task is truly self-contained with no remaining checks, unverified risks, or natural follow-up (never invent filler like "want me to write a summary?").
   2. Outputting an optimized-prompt confirmation turn (`### Optimized Prompt` or localized equivalent).
   3. Asking open-ended clarifying questions whose answer you cannot predict (missing requirements, preferences, or unknown choices), or blocking on login, 2FA, CAPTCHA, or payment. (Concrete user-action handoffs whose return prompt is predictable are allowed.)
   4. Pure chit-chat, greetings, venting, `/prompt-optimizer` config/status replies, or trivial one-line factual Q&A.

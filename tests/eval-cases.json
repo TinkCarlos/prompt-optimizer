@@ -90,6 +90,40 @@
         "Appends one copy-ready return prompt in user voice naming the 4 screenshots and next check",
         "Uses --- and bold label without ###, >, or code fences"
       ]
+    },
+    {
+      "id": "rewrite-diagnostic-question",
+      "category": "routing",
+      "context": [],
+      "user_input": "我每天发的内容帖子都没有什么曝光度是为什么啊，我看我让你写的文章都有比较好的曝光",
+      "expected_route": "REWRITE",
+      "assertions": [
+        "Routes to REWRITE immediately before running memory lookups or file reads",
+        "Translates vague exposure complaint into concrete content/distribution diagnostic dimensions without guessing the root cause",
+        "Chinese output, heading + blockquote + confirmation line only"
+      ]
+    },
+    {
+      "id": "rewrite-multipart-missing-criteria",
+      "category": "routing",
+      "context": [],
+      "user_input": "先帮我提交到github，做中英双语的readme文档，另外生成mac版本的dmg安装包进行上传",
+      "expected_route": "REWRITE",
+      "assertions": [
+        "Recognizes multi-part request lacking repo/branch scope, release target, and verification criteria as REWRITE",
+        "Preserves all three requested deliverables without inventing unstated repo names or signing settings"
+      ]
+    },
+    {
+      "id": "next-step-after-ponytail-risk",
+      "category": "next-step",
+      "context": ["Assistant committed and pushed TodoNotch v1.0.0 DMG to GitHub, and ended with Ponytail's skipped-items/risk note (not tested on a clean Mac; Gatekeeper xattr workaround needed)."],
+      "user_input": "继续",
+      "expected_route": "SKIP",
+      "assertions": [
+        "Appends the --- next-step prompt block AFTER the Ponytail closing risk/skipped-check note",
+        "Does not let the closing risk note replace the next-step block"
+      ]
     }
   ]
 }

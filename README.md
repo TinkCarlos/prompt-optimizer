@@ -79,7 +79,7 @@ A hook or extension runs before every message and tells the agent to apply the s
 | Antigravity | yes | `hooks/prompt-optimizer-agy.js` (`next` defaults to `on`) |
 | T3 Code | yes | inherits Claude Code, Codex and Pi hooks automatically (hooks unwrap `<t3_code_instructions>` / `<user_request>`); for T3 Code's isolated Antigravity provider, run `node scripts/install-t3.js` |
 | Claude Code | yes | `hooks/prompt-optimizer-hook.js claude` (`next` defaults to `on`) |
-| Codex | yes | `hooks/prompt-optimizer-hook.js codex` (`next` defaults to `off` to avoid duplicating Codex's native input suggestion; you must trust the new hook) |
+| Codex | yes | `hooks/prompt-optimizer-hook.js codex` (`next` defaults to `on`; run `/prompt-optimizer next default off` if you prefer only Codex's native input suggestion; you must trust the new hook) |
 | Pi | yes | `pi install git:github.com/TinkCarlos/prompt-optimizer` or `hooks/prompt-optimizer-pi.js` (`next` defaults to `on`) |
 | Cursor | no | its prompt hook cannot add context to the model; use the skill manually |
 | Grok | not tested | use the skill manually |
@@ -157,7 +157,7 @@ To check that it is active, send a vague task such as `make a deck introducing t
 - `/prompt-optimizer on | off | status`: switch auto mode (`off` silences both rewrite and next-step suggestions) and inspect current settings.
 - `/prompt-optimizer default on | off`: default rewrite mode for new sessions (default is `on`).
 - `/prompt-optimizer next on | off`: toggle post-turn next-step suggestions for the current session (even when rewrite is `off`, `/prompt-optimizer next on` keeps suggestions active).
-- `/prompt-optimizer next default on | off`: default post-turn suggestion mode for new sessions (`on` for Antigravity, Claude Code, and Pi; `off` for Codex).
+- `/prompt-optimizer next default on | off`: default post-turn suggestion mode for new sessions (`on` for Antigravity, Claude Code, Codex, and Pi).
 - `/prompt-optimizer <text>`: force one rewrite even when auto mode is off.
 - Start a message with `raw:` to skip the rewrite once.
 
