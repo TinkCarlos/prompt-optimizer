@@ -84,19 +84,21 @@ Use this prompt? (approve / edit / use original)
   3. Asking open-ended clarifying questions whose answer you cannot predict (missing requirements, preferences, or unknown choices), or blocking on login, 2FA, CAPTCHA, or payment. (Concrete user-action handoffs whose return prompt is predictable are allowed.)
   4. Pure chit-chat, greetings, venting, `/prompt-optimizer` config/status replies, or trivial one-line factual Q&A.
 - **How to write it (only when clearly helpful)**:
-  - Ground in what was just completed, any concrete action just handed to the user, remaining unverified or uncommitted items and risks, and any relevant history, project rules, or user workflow habits already loaded in the current session (do not run extra memory lookups just for suggestions, and never fabricate missing history).
-  - Write in the user's voice as a direct, copy-and-send prompt (1–2 concrete sentences naming the real target, action, and check — never meta-advice like "you could ask me to..."), so pasting it back executes immediately without triggering another rewrite. For a user-action handoff, phrase it as the exact return message when bringing the results back, specifying the exact items, counts/conditions, and immediate verification or next workflow step.
+  - **Recover the pending outcome from the conversation.** Use the latest confirmed scope, what just worked, what remains unverified, and any project rules already loaded. Pull the named target, environment, real sample, exact items or counts, and any prerequisite or approval gate that affects the next action. Keep references like "this batch" only when the intended target is clear in the same conversation.
+  - **Make the finish line observable.** For a workflow, name its real entry and end point. Spell out what to check for each relevant integration or pending regression, and ask for the evidence or artifact the user expects to see. Replace a phrase like "verify the integration" with the relevant actions and visible outcomes. For a user-action handoff, write the exact return message naming what the user is bringing back and what to do with it.
+  - **Use only supported details.** Keep the confirmed environment and authorization boundaries. If an action depends on unresolved approval or prerequisites, retain that condition or choose a known next check within scope. When context supports only one useful action or check, keep the draft that narrow. When it supports no concrete next action, omit the block.
+  - **Write in the user's voice.** Use a direct request ready to paste back into the same conversation. Aim for 1–2 natural sentences and keep every detail that changes how to act, verify, or hand back results.
   - When included, give **1** highest-value prompt (or **2–3** short `- ` options only when there is a real fork, for example verify/refine vs. commit/deploy).
   - Always write the label and prompt(s) in the user's language.
 - **Format**: A `---` horizontal rule, one short bold localized label (for example, `**Suggested next prompt** (copy and send as-is):`), followed by plain text for 1 prompt or a `- ` bullet list for 2–3 prompts. Never use a `###` heading, `>` blockquote, or fenced code block (keeps wrapping compact and avoids colliding with confirmation-turn detection).
 
 ### Next-step examples
 
-1. Single prompt (local fix ready to ship and verify):
+1. Single prompt (push and staging deployment already approved):
 
    ---
    **Suggested next prompt** (copy and send as-is):
-   Commit and push this fix, deploy it, and re-run the checkout smoke test with the stale session fixture to confirm the new banner renders.
+   Push the reviewed fix to the current branch and deploy it to staging. Run checkout from cart to confirmation, then repeat with an expired session and send me the test results and a screenshot of the sign-in banner.
 
 2. Forked directions (2 options):
 
