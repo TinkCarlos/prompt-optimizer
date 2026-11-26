@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// Cross-host UserPromptSubmit hook for prompt-optimizer (Claude Code / Codex).
+// Cross-host UserPromptSubmit hook and Codex Stop check for prompt-optimizer.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -28,6 +28,7 @@ const SINGLE_LINE_CMD_RE = /^(?:pwd|git\s+(?:status|diff|log|branch|checkout|swi
 // but let `/skill <task body>` or `@file <task body>` pass through to the router.
 const CONTROL_CMD_RE = /^\/(?:compact|clear|plan|goal|schedule|browser|grill-me|teamwork|learn|boost|hooks?|help|status|model|models|config|permissions|mcp|memory|plugins?|login|logout|resume|rewind|rename|cost|doctor|init|exit|quit|ponytail(?:[:：][\w-]+)?)(?:\s|$)/i;
 const MACHINE_RE = /^\s*(?:<\\?~?(?:hook_prompt|system-reminder|task-notification|cross-session-message|side-sessions-event|ci-monitor-event|send_user_message_question_reply)\b|\[(?:KROUTER_PROACTIVE|LMEMORY_PROACTIVE|PROMPT-OPTIMIZER)\b)/i;
+const OMIT_NEXT_RE = /(?:不要|不用|无需|不必|禁止)(?:再)?(?:给出?|提供|附上?|添加|写|输出)\s*(?:任何\s*)?(?:下一步|后续)(?:的)?(?:建议|指令|提示词)|\b(?:no|omit|skip|(?:do not|don['’]t) (?:add|include|give|provide))\s+(?:any\s+)?(?:next[ -]step|follow[ -]up)(?:\s+(?:suggestions?|prompts?))?\b/i;
 const OPTIMIZER_HEADING_RE = /^#{2,4}\s*(?:优化后的提问|优化后的提示词|Optimized Prompt)(?:$|[\s:：\-—(（])/i;
 const SKILL_META_RE = /(?:(?:这个|该|当前|本|此)\s*(?:skill|技能|hook|钩子|扩展|插件|脚本|提示词优化器)|SKILL\.md|\b(?:this|the)\s+(?:skill|hook|extension|plugin|script|repo|readme|prompt-optimizer)\b|^(?:(?:还有|有|存在|哪里有)(?:什么|啥)?问题|为什么(?:没触发|不触发|会触发|没生效|不生效|老是|总是)|(?:怎么|如何)(?:用|安装|配置|工作|触发|关闭|开启|修复|优化)|(?:审查|检查|修复|优化|改进|重构|调试)(?:一下)?(?:这个|该|当前|本)?\s*(?:skill|技能|hook|钩子|扩展|插件|脚本)|what(?:'s| is) wrong|any (?:issues?|bugs?|problems?)|how does (?:this|it) work|why (?:didn't|did|doesn't|isn't) (?:this|it)|(?:review|audit|inspect|debug|fix|edit|update|refactor|improve)\s+(?:this|the|your|its)?\s*(?:skill|hook|extension|plugin|script|prompt-optimizer)\b))/i;
 const STATE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -192,10 +193,10 @@ function readSession(sessionId) {
     if (parsed && typeof parsed === 'object') {
       const mode = parsed.mode === 'on' || parsed.mode === 'off' ? parsed.mode : null;
       const nextMode = parsed.nextMode === 'on' || parsed.nextMode === 'off' ? parsed.nextMode : null;
-      return { mode, nextMode, awaitingConfirm: Boolean(parsed.awaitingConfirm) };
+      return { mode, nextMode, awaitingConfirm: Boolean(parsed.awaitingConfirm), suppressNext: parsed.suppressNext === true };
     }
   } catch (_) {}
-  return { mode: null, nextMode: null, awaitingConfirm: false };
+  return { mode: null, nextMode: null, awaitingConfirm: false, suppressNext: false };
 }
 
 function writeSession(sessionId, state) {
@@ -204,6 +205,7 @@ function writeSession(sessionId, state) {
       mode: state.mode === 'on' || state.mode === 'off' ? state.mode : null,
       nextMode: state.nextMode === 'on' || state.nextMode === 'off' ? state.nextMode : null,
       awaitingConfirm: Boolean(state.awaitingConfirm),
+      ...(state.suppressNext ? { suppressNext: true } : {}),
     }));
     maybePruneStateDir(STATE_ROOT);
   } catch (_) {}
@@ -414,6 +416,78 @@ function composeInstruction(primary, includeNext) {
   return [primary, includeNext ? nextStepInstruction() : ''].filter(Boolean).join('\n\n');
 }
 
+function codexNextTurnFile({ session_id, turn_id }, phase = 'injected') {
+  if (HOST !== 'codex' || !session_id || !turn_id) return null;
+  const identity = JSON.stringify(['codex-next', session_id, turn_id, phase]);
+  return path.join(STATE_ROOT, 'turn-' + hashId(identity) + '.json');
+}
+
+function outputUserPrompt(payload, primary, includeNext) {
+  const mark = includeNext && codexNextTurnFile(payload);
+  if (mark) {
+    try {
+      atomicWrite(mark, '{}');
+      maybePruneStateDir(STATE_ROOT);
+    } catch (_) {}
+  }
+  return out(wrapContext(composeInstruction(primary, includeNext)));
+}
+
+function batchSections(text) {
+  const references = [...text.matchAll(/(?:批次(?:编号)?\s*(?:是|为|[:：#])?\s*|\bbatch(?:\s+id)?\s*[:#]?\s*)`?([0-9]+)`?/gi)];
+  const sections = new Map();
+  for (const [index, reference] of references.entries()) {
+    const id = reference[1];
+    const part = text.slice(index === 0 ? 0 : reference.index, references[index + 1]?.index);
+    sections.set(id, (sections.get(id) || '') + '\n' + part);
+  }
+  return sections.size > 1 ? [...sections.values()] : [text];
+}
+
+function checkCodexStop(payload, session) {
+  const mark = codexNextTurnFile(payload);
+  if (!mark) return;
+  // Consume the current turn's marker before deciding whether to request a continuation.
+  try {
+    fs.unlinkSync(mark);
+  } catch (_) {
+    return;
+  }
+  if (payload.stop_hook_active || session.suppressNext || !resolveModes(session).nextEnabled) return;
+
+  const text = stripCodeFences(String(payload.last_assistant_message || ''));
+  if (!text || looksLikeOptimizedPrompt(text) || /^\s*[{[]/.test(text)) return;
+  if (/(?:^|\n)---\s*\n\s*\*\*[^\n]+\*\*/.test(text) || /[?？]$/.test(text)) return;
+  const knownInputs = /\b[1-9]\d{0,8}\s*(?:个|条|项|份)\s*(?:提示词|抓取明细|记录|输入|样本)|\b[1-9]\d{0,8}\s+(?:source\s+)?(?:prompts|records|rows|inputs|samples)\b/i;
+  const emptyResult = /(?:显示|返回|结果为)\s*[「“"'\x60]?(?:暂无数据|无数据|无结果|空列表)|(?:shows?|returns?)\s+(?:an?\s+empty\s+(?:list|state)|no\s+(?:data|results))/i;
+  const explainedResult = /已(?:经)?[^。！？\n]{0,28}逐(?:条|项|个)(?:核对|确认|排除)|(?:空结果|空态|无数据|暂无数据)\s*符合预期|(?:均|都|全部)\s*(?:已)?(?:被(?:过滤|排除)|已推荐|有提及)|\b(?:all items (?:were )?(?:checked|reconciled|filtered out|excluded)|empty (?:result|state) (?:is |was )?expected)\b/i;
+  const userGate = /(?:需要|请)(?:你)?先(?:登录|付款|验证身份)|未(?:登录|付款)|(?:登录|付款|验证身份)后才能|\b(?:(?:must|need to) (?:sign in|log in|pay)|not (?:signed|logged) in|(?:sign in|log in|pay) to continue)\b/i;
+  if (userGate.test(text)) return;
+  const missingExplanation = batchSections(text).some((part) =>
+    knownInputs.test(part) && emptyResult.test(part) && !explainedResult.test(part)
+  );
+  if (!missingExplanation) return;
+
+  // An exclusive claim also covers a repeated submit event that recreates the marker.
+  try {
+    fs.writeFileSync(codexNextTurnFile(payload, 'continued'), '{}', { flag: 'wx' });
+  } catch (_) {
+    return;
+  }
+
+  return out({
+    decision: 'block',
+    reason: [
+      '[PROMPT-OPTIMIZER NEXT-STEP CHECK]',
+      'The completed reply reports known inputs and an empty result without an item-by-item explanation.',
+      'Output only the missing next-step block in the user’s language and voice: a horizontal rule, a short bold label, and a copy-ready request of one or two sentences.',
+      'Preserve the exact source, batch identifiers and counts. Ask to check the relevant states and filtering conditions item by item. For an empty list fed by captured prompts, name the capture and recommendation status checks for each prompt on the applicable platforms.',
+      'Keep the request focused on explaining the empty result. Treat unknown states as questions and leave other completed checks out.',
+      'Draft text only. Preserve all scope and approval boundaries. Do not call tools, perform any action, repeat the completed reply, or report unverified results.',
+    ].join('\n'),
+  });
+}
+
 function pendingReplyInstruction() {
   return [
     '[PROMPT-OPTIMIZER PENDING-REPLY]',
@@ -514,13 +588,14 @@ function main() {
 
   const hookEvent = String(payload.hook_event_name || '');
   const source = String(payload.source || '').toLowerCase();
+  if (hookEvent === 'Stop') return checkCodexStop(payload, session);
   if (hookEvent === 'SessionStart' || (!payload.prompt && source === 'compact')) {
     if (session.awaitingConfirm) {
       writeSession(sessionId, { ...session, awaitingConfirm: false });
     }
     if (source === 'compact') {
       const { nextEnabled } = resolveModes(session);
-      if (nextEnabled) {
+      if (nextEnabled && !session.suppressNext) {
         return out(wrapContext(nextStepRefreshInstruction(true), 'SessionStart'));
       }
     }
@@ -546,7 +621,16 @@ function main() {
     return;
   }
 
-  const { rewriteEnabled, nextEnabled } = resolveModes(session);
+  if (HOST === 'codex') {
+    const suppressNext = OMIT_NEXT_RE.test(prompt) || BYPASS_PREFIX_RE.test(prompt);
+    if (session.suppressNext !== suppressNext) {
+      session.suppressNext = suppressNext;
+      writeSession(sessionId, session);
+    }
+  }
+
+  const { rewriteEnabled, nextEnabled: nextModeEnabled } = resolveModes(session);
+  const nextEnabled = nextModeEnabled && !session.suppressNext;
   if (!rewriteEnabled && !nextEnabled && !session.awaitingConfirm) return;
 
   const tx = inspectHostTranscript(String(payload.transcript_path || ''), prompt);
@@ -564,7 +648,7 @@ function main() {
     }
     const keepExplicitConfirm = !rewriteEnabled && tx.hasTranscriptTruth;
     writeSession(sessionId, { ...session, awaitingConfirm: keepExplicitConfirm });
-    return out(wrapContext(composeInstruction(pendingReplyInstruction(), nextEnabled)));
+    return outputUserPrompt(payload, pendingReplyInstruction(), nextEnabled);
   }
 
   if (!rewriteEnabled && !nextEnabled) return;
@@ -574,11 +658,11 @@ function main() {
 
   if (kind === 'actionable' || !rewriteEnabled) {
     if (!nextEnabled) return;
-    return out(wrapContext(nextStepInstruction()));
+    return outputUserPrompt(payload, '', nextEnabled);
   }
 
   writeSession(sessionId, { ...session, awaitingConfirm: true });
-  return out(wrapContext(composeInstruction(gateInstruction(false), nextEnabled)));
+  return outputUserPrompt(payload, gateInstruction(false), nextEnabled);
 }
 
 try {

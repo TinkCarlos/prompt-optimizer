@@ -46,6 +46,8 @@
 
 当上下文明确时，建议会写出执行环境、从入口到结果的实际流程、待验收的功能与关键回归、需要交回的证据或文件，并保留已有的授权条件。只确认了一项检查时，建议也只写这一项。
 
+Codex 的 `Stop` Hook 检查已注入规则的轮次。回复给出非零的源数据条数，却留下未经逐条解释的空结果且缺少建议时，Hook 只请求补写一次建议。已经解释清楚、已有建议或关闭 `next` 的轮次直接结束。
+
 在长工具链或同一会话多次上下文压缩场景下，Hook 会自动保活该提醒且绝不重复触发改写：Antigravity 会在每次 `CHECKPOINT` 压缩后以及长轮次每 16 步（`PROMPT_OPTIMIZER_NEXT_REFRESH_STEPS`）补发一次 `[PROMPT-OPTIMIZER NEXT-STEP]`；Claude Code 通过 `SessionStart`（`matcher: "compact"`）在压缩后立即恢复；各宿主 Hook 在压缩边界自动清理陈旧的待确认状态，并支持最多 64 MB 分块倒扫长会话日志。
 
 如果当前任务已经完整结束无需再做（宁缺毋滥、绝不为了建议而硬凑），或处于优化确认轮、向你提出开放式澄清追问、因登录/付款受阻、纯闲聊、开关配置回复、极简问答，都会保持完全静默。因为建议本身已经具体可验证，复制发回后会直接执行，不会再次触发改写。
@@ -119,6 +121,8 @@ cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
 ```
 
 把 `hooks/codex-hooks.example.json` 合并进 `~/.codex/hooks.json`，并确认已开启 Hook（`~/.codex/config.toml` 的 `[features]` 下有 `hooks = true`）。**Codex 在你信任之前不会运行新 Hook**：在 Codex 里打开 `/hooks`，批准 `prompt-optimizer-hook.js`，然后新开一个会话。
+
+已安装的 Codex 环境可追加示例中的 `Stop` 条目，再用 `/hooks` 审核启用收尾检查。
 
 **Pi**
 

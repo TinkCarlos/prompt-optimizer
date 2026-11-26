@@ -47,6 +47,8 @@ When `next` is enabled and a concrete, high-value follow-up genuinely exists—e
 
 When the context supports them, the prompt names the environment, the workflow from entry to outcome, the integrations and regressions to check, and the evidence or files to return. It carries forward existing approval conditions and stays as narrow as the confirmed next action.
 
+The Codex `Stop` hook checks a reply from a turn that received the next-step rules. When the reply reports a positive source count and an empty result without an item-by-item explanation or a suggestion, it asks once for the suggestion alone. Completed replies, existing suggestions, and turns with `next` disabled pass through.
+
 Across long tool runs and repeated context compactions, the hooks keep the reminder active without re-running prompt rewriting: Antigravity refreshes `[PROMPT-OPTIMIZER NEXT-STEP]` once after each `CHECKPOINT` compaction and every 16 steps (`PROMPT_OPTIMIZER_NEXT_REFRESH_STEPS`), Claude Code restores it on `SessionStart` (`matcher: "compact"`), and all host hooks clear stale pending-confirmation state at compaction boundaries while scanning up to 64 MB of transcript tail in bounded chunks.
 
 It stays completely silent whenever a task is self-contained or done (never forcing filler suggestions), as well as during confirmation turns, open-ended clarifying questions whose answer cannot be predicted, login/payment gates, chit-chat, config replies, and trivial Q&A. Because the suggested prompt is already concrete, pasting it back executes immediately without triggering another rewrite.
@@ -120,6 +122,8 @@ cp hooks/prompt-optimizer-hook.js ~/.agents/hooks/
 ```
 
 Merge `hooks/codex-hooks.example.json` into `~/.codex/hooks.json` and make sure hooks are enabled (`hooks = true` under `[features]` in `~/.codex/config.toml`). **Codex does not run a new hook until you trust it**: open `/hooks` in Codex and approve `prompt-optimizer-hook.js`. After that, start a new session.
+
+Existing installations can append the example’s `Stop` entry and review it in `/hooks` to enable the completion check.
 
 **Pi**
 
